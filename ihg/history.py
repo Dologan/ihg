@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from pathlib import Path
-from typing import List
+from typing import List, Sequence, Tuple
+
+from ihg.filters import build_processed
 
 _ZSH_LINE = re.compile(r"^: (\d+):(\d+);(.*)$")
 
@@ -116,3 +119,145 @@ def load_commands_newest_first(path: Path) -> List[str]:
     cmds = load_commands_chronological(path)
     cmds.reverse()
     return cmds
+
+
+def histfile_is_zsh(path: Path) -> bool:
+    return _detect_zsh(read_histfile_text(path))
+
+
+def _zsh_cmd_from_match(m: re.Match[str]) -> str:
+    cmd = m.group(3).replace("\\n", "\n").strip()
+    return cmd
+
+
+def append_histfile_line(path: Path, command: str, *, is_zsh: bool) -> None:
+    """Append one command as a new history entry (does not modify existing lines)."""
+    cmd = command.replace("\r\n", "\n").rstrip("\n")
+    if not cmd.strip():
+        return
+    enc = "utf-8"
+    if is_zsh:
+        esc = cmd.replace("\\", "\\\\").replace("\n", "\\n")
+        line = f": {int(time.time())}:0;{esc}\n"
+        with path.open("a", encoding=enc) as f:
+            f.write(line)
+        return
+    blob = path.read_bytes() if path.is_file() else b""
+    with path.open("a", encoding=enc) as f:
+        if blob and not blob.endswith(b"\n"):
+            f.write("\n")
+        f.write(cmd)
+        if not cmd.endswith("\n"):
+            f.write("\n")
+
+
+def _parse_bash_blocks(text: str) -> List[Tuple[str, str]]:
+    """
+    Bash history as (canonical_cmd, block_text). ``canonical_cmd`` matches
+    ``parse_bash_history`` output; ``block_text`` is the file region to remove
+    when deleting that entry (includes ``#timestamp`` line when present).
+    """
+    lines = text.splitlines()
+    n = len(lines)
+    i = 0
+    pending: str | None = None
+    block_lines: List[str] = []
+    blocks: List[Tuple[str, str]] = []
+
+    def flush() -> None:
+        nonlocal pending, block_lines
+        if pending is not None:
+            c = pending.strip()
+            if c:
+                raw = "\n".join(block_lines)
+                blocks.append((c, raw + ("\n" if not raw.endswith("\n") else "")))
+        pending = None
+        block_lines = []
+
+    while i < n:
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped:
+            i += 1
+            continue
+
+        if stripped.startswith("#") and stripped[1:].isdigit():
+            flush()
+            block_lines = [line]
+            i += 1
+            if i < n:
+                cmd_line = lines[i]
+                block_lines.append(cmd_line)
+                if cmd_line.startswith(" ") and pending is not None:
+                    pending = (pending or "") + "\n" + cmd_line
+                else:
+                    pending = cmd_line.rstrip("\n")
+                i += 1
+            continue
+
+        if line.startswith(" ") and pending is not None:
+            block_lines.append(line)
+            pending += "\n" + line.rstrip("\n")
+            i += 1
+            continue
+
+        flush()
+        block_lines = [line]
+        pending = line.rstrip("\n")
+        i += 1
+
+    flush()
+    return blocks
+
+
+def delete_matching_commands(path: Path, command: str, *, is_zsh: bool) -> int:
+    """Remove all file entries whose parsed command equals ``command`` (exact string)."""
+    want = command.strip()
+    if not want:
+        return 0
+    text = read_histfile_text(path)
+    if is_zsh:
+        kept: List[str] = []
+        removed = 0
+        for raw in text.splitlines(keepends=True):
+            m = _ZSH_LINE.match(raw.rstrip("\n"))
+            if m and _zsh_cmd_from_match(m) == want:
+                removed += 1
+                continue
+            kept.append(raw)
+        if removed:
+            path.write_text("".join(kept), encoding="utf-8")
+        return removed
+    blocks = _parse_bash_blocks(text)
+    kept_blk = [blk for c, blk in blocks if c.strip() != want]
+    removed = len(blocks) - len(kept_blk)
+    if removed:
+        path.write_text("".join(kept_blk), encoding="utf-8")
+    return removed
+
+
+def write_clean_histfile_backup(
+    commands_newest_first: Sequence[str],
+    dest: Path,
+    *,
+    is_zsh: bool,
+) -> None:
+    """
+    Write deduplicated, non-trivial commands (same rules as the TUI) to ``dest``.
+    Order is oldest-first for readability.
+    """
+    cleaned, _ = build_processed(commands_newest_first)
+    oldest_first = list(reversed(cleaned))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if is_zsh:
+        ts = int(time.time())
+        lines = []
+        for j, cmd in enumerate(oldest_first):
+            esc = cmd.replace("\\", "\\\\").replace("\n", "\\n")
+            lines.append(f": {ts + j}:0;{esc}\n")
+        dest.write_text("".join(lines), encoding="utf-8")
+        return
+    body = "\n".join(oldest_first)
+    if body and not body.endswith("\n"):
+        body += "\n"
+    dest.write_text(body, encoding="utf-8")

@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import curses
 import re
+from datetime import datetime
+from pathlib import Path
 from typing import List, Optional, Tuple
 
-from ihg.filters import apply_text_filter
+from ihg.filters import apply_text_filter, build_processed
+from ihg.history import (
+    append_histfile_line,
+    delete_matching_commands,
+    load_commands_newest_first,
+    write_clean_histfile_backup,
+)
 from ihg.run import run_selected
 
 Pair = Tuple[str, int]  # (command, recency_rank)
@@ -64,7 +72,8 @@ def _build_step_groups(commands: List[str], limit: int = 500) -> List[Tuple[str,
 
 def _parse_colon(buf: str) -> Optional[str]:
     """
-    Return action name: quit, reset, sort_asc, sort_desc, group, digit_N, unknown.
+    Return action name: quit, reset, sort_asc, sort_desc, group, edit, delete,
+    backup_default, backup_to:PATH, digit_N, unknown.
     buf must include leading ':'.
     """
     if not buf.startswith(":"):
@@ -80,6 +89,14 @@ def _parse_colon(buf: str) -> Optional[str]:
         return "sort_desc"
     if body == "g":
         return "group"
+    if body == "e":
+        return "edit"
+    if body == "d":
+        return "delete"
+    if body == "b":
+        return "backup_default"
+    if body.startswith("b ") and body[2:].strip():
+        return f"backup_to:{body[2:].strip()}"
     if len(body) == 1 and body.isdigit():
         return f"digit_{body}"
     return "unknown"
@@ -89,6 +106,8 @@ def run_interactive(
     base_commands: List[str],
     initial_filter: str,
     stdin_data: Optional[bytes],
+    histfile_path: Path,
+    histfile_zsh: bool,
 ) -> int:
     """
     Run the TUI. Returns subprocess exit code after running a command,
@@ -104,7 +123,14 @@ def run_interactive(
             curses.start_color()
         except curses.error:
             pass
-        return _tui_main(stdscr, base_commands, initial_filter, stdin_data)
+        return _tui_main(
+            stdscr,
+            base_commands,
+            initial_filter,
+            stdin_data,
+            histfile_path,
+            histfile_zsh,
+        )
     except curses.error:
         print("ihg: terminal does not support curses (need a real TTY)", flush=True)
         return 2
@@ -130,6 +156,8 @@ def _tui_main(
     base_commands: List[str],
     initial_filter: str,
     stdin_data: Optional[bytes],
+    histfile_path: Path,
+    histfile_zsh: bool,
 ) -> int:
     curses.curs_set(0)
     stdscr.keypad(True)
@@ -162,9 +190,45 @@ def _tui_main(
     group_cursor = 0
     group_scroll = 0
 
+    edit_mode = False
+    edit_buffer = ""
+    edit_curs = 0
+
     def status_set(msg: str) -> None:
         nonlocal status
         status = msg
+
+    def reload_from_disk() -> None:
+        nonlocal cursor, scroll, group_mode, group_sections, expanded
+        nonlocal group_cursor, group_scroll
+        nf = load_commands_newest_first(histfile_path)
+        b, _ = build_processed(nf)
+        base_commands.clear()
+        base_commands.extend(b)
+        group_mode = False
+        group_sections.clear()
+        expanded.clear()
+        group_cursor = 0
+        group_scroll = 0
+        pairs = _visible_pairs(base_commands, filter_text, sort_mode)
+        if not pairs:
+            cursor = 0
+            scroll = 0
+        else:
+            cursor = min(cursor, len(pairs) - 1)
+            scroll = min(scroll, max(0, cursor))
+
+    def selected_command() -> Optional[str]:
+        if group_mode:
+            rows = build_group_rows()
+            if not rows or group_cursor >= len(rows):
+                return None
+            _, cmd, _ = rows[group_cursor]
+            return cmd
+        pairs = _visible_pairs(base_commands, filter_text, sort_mode)
+        if not pairs or cursor >= len(pairs):
+            return None
+        return pairs[cursor][0]
 
     def build_group_rows() -> List[Tuple[str, Optional[str], Optional[int]]]:
         """Rows: (display, command_to_run_or_None, section_index_for_header)."""
@@ -216,7 +280,7 @@ def _tui_main(
                         stdscr.addstr(i, 0, line, row_attr)
                     except curses.error:
                         pass
-            hint = " Enter: run/toggle  :r default  Esc: back  +/- "
+            hint = " Enter  :e/:d/:b  :r  Esc back  +/- "
         else:
             pairs = _visible_pairs(base_commands, filter_text, sort_mode)
             total = len(pairs)
@@ -245,11 +309,31 @@ def _tui_main(
                     except curses.error:
                         pass
             so = f" [{sort_mode}]" if sort_mode else ""
-            hint = f" ↑/↓ j/k  Enter run{so}  :cmds  :r reset  Esc clear "
+            hint = (
+                f" ↑/↓ j/k  Enter run{so}  :e edit :d del :b backup  :r  Esc clear "
+            )
 
         foot0 = h - 2
         foot1 = h - 1
-        if colon_entry:
+        if edit_mode:
+            disp = edit_buffer.replace("\n", " ")
+            prefix = "edit: "
+            wlim = max(1, w - 1)
+            avail = max(4, wlim - len(prefix))
+            dc = len(edit_buffer[:edit_curs].replace("\n", " "))
+            dc = min(dc, len(disp))
+            if len(disp) <= avail:
+                chunk = disp
+                mark = dc
+            else:
+                start = max(0, min(dc - avail // 2, len(disp) - avail))
+                chunk = disp[start : start + avail]
+                mark = min(max(dc - start, 0), len(chunk))
+            mid = chunk[:mark] + "|" + chunk[mark:]
+            prompt = (prefix + mid)[:wlim]
+            if len(prefix + mid) > wlim:
+                prompt = (prefix + mid)[: wlim - 1] + "…"
+        elif colon_entry:
             prompt = colon_buffer
         else:
             prompt = f"filter: {filter_text}"
@@ -276,6 +360,10 @@ def _tui_main(
         ch = stdscr.getch()
 
         if ch == 27:  # Esc
+            if edit_mode:
+                edit_mode = False
+                status_set("")
+                continue
             if group_mode:
                 group_mode = False
                 status_set("")
@@ -330,6 +418,64 @@ def _tui_main(
                     group_scroll = 0
                     status_set("groups by command step (:g)")
                     continue
+                if act == "edit":
+                    cmd = selected_command()
+                    if cmd is None:
+                        status_set("select a command line to edit")
+                        continue
+                    edit_mode = True
+                    edit_buffer = cmd
+                    edit_curs = len(edit_buffer)
+                    group_mode = False
+                    status_set("edit then Enter (appends hist, runs)  Esc cancel")
+                    continue
+                if act == "delete":
+                    cmd = selected_command()
+                    if cmd is None:
+                        status_set("select a command line to delete")
+                        continue
+                    try:
+                        n = delete_matching_commands(
+                            histfile_path, cmd, is_zsh=histfile_zsh
+                        )
+                    except OSError as exc:
+                        status_set(f"delete failed: {exc}")
+                        continue
+                    reload_from_disk()
+                    group_mode = False
+                    status_set(
+                        f"removed {n} matching entries" if n else "no matching entries"
+                    )
+                    continue
+                if act == "backup_default":
+                    dest = histfile_path.parent / (
+                        f"{histfile_path.name}.ihg-clean."
+                        f"{datetime.now():%Y%m%d-%H%M%S}"
+                    )
+                    try:
+                        cmds_nf = load_commands_newest_first(histfile_path)
+                        write_clean_histfile_backup(
+                            cmds_nf,
+                            dest,
+                            is_zsh=histfile_zsh,
+                        )
+                        status_set(f"backup → {dest}")
+                    except OSError as exc:
+                        status_set(f"backup failed: {exc}")
+                    continue
+                if act.startswith("backup_to:"):
+                    dest = Path(act[10:]).expanduser()
+                    try:
+                        cmds_nf = load_commands_newest_first(histfile_path)
+                        write_clean_histfile_backup(
+                            cmds_nf,
+                            dest,
+                            is_zsh=histfile_zsh,
+                        )
+                        status_set(f"backup → {dest}")
+                    except OSError as exc:
+                        status_set(f"backup failed: {exc}")
+                    continue
                 if act and act.startswith("digit_"):
                     d = int(act[-1])
                     if d < len(base_commands):
@@ -347,6 +493,50 @@ def _tui_main(
                 continue
             if 32 <= ch < 127:
                 colon_buffer += chr(ch)
+                continue
+            continue
+
+        if edit_mode:
+            if ch in (curses.KEY_ENTER, 10, 13):
+                cmd = edit_buffer.strip()
+                if not cmd:
+                    edit_mode = False
+                    status_set("empty command")
+                    continue
+                try:
+                    append_histfile_line(
+                        histfile_path, cmd, is_zsh=histfile_zsh
+                    )
+                except OSError as exc:
+                    status_set(f"append history failed: {exc}")
+                    continue
+                edit_mode = False
+                return run_cmd(cmd)
+            if ch in (curses.KEY_BACKSPACE, 127, 8):
+                if edit_curs > 0:
+                    edit_buffer = (
+                        edit_buffer[: edit_curs - 1] + edit_buffer[edit_curs :]
+                    )
+                    edit_curs -= 1
+                continue
+            if ch in (curses.KEY_LEFT,):
+                edit_curs = max(0, edit_curs - 1)
+                continue
+            if ch in (curses.KEY_RIGHT,):
+                edit_curs = min(len(edit_buffer), edit_curs + 1)
+                continue
+            if ch in (curses.KEY_HOME,):
+                edit_curs = 0
+                continue
+            if ch in (curses.KEY_END,):
+                edit_curs = len(edit_buffer)
+                continue
+            if 32 <= ch < 127:
+                c = chr(ch)
+                edit_buffer = (
+                    edit_buffer[:edit_curs] + c + edit_buffer[edit_curs:]
+                )
+                edit_curs += 1
                 continue
             continue
 
