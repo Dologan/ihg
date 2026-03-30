@@ -57,6 +57,29 @@ def test_run_selected_prints_command_on_stderr(capsys, monkeypatch: pytest.Monke
     assert kwargs["stderr"] is sys.stderr
 
 
+def test_zsh_prepends_nonomatch_for_glob_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ihg_run, "_SHELL_ALIASES", {})
+    monkeypatch.setattr(ihg_run, "_shell_path", lambda: "/usr/bin/zsh")
+    monkeypatch.delenv("IHG_NO_ZSH_NONOMATCH", raising=False)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+    captured: list[list[str]] = []
+
+    def fake_run(*a: object, **k: object) -> subprocess.CompletedProcess[object]:
+        captured.append(a[0] if a else [])
+        return subprocess.CompletedProcess([], 0)
+
+    monkeypatch.setattr("ihg.run.subprocess.run", fake_run)
+    monkeypatch.setattr("ihg.run._shell_invocation", lambda _s, c: ["/usr/bin/zsh", "-c", c])
+    ihg_run.run_selected("ls -l ~/*.sh", None, piped_notice=False)
+    assert captured
+    inner = captured[0][-1]
+    assert inner.startswith("setopt nonomatch")
+    assert "ls -l ~/*.sh" in inner
+
+
 def test_run_selected_piped_stdin_message(capsys, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ihg_run, "_SHELL_ALIASES", {})
     monkeypatch.setattr("ihg.run.subprocess.run", MagicMock(return_value=subprocess.CompletedProcess([], 0)))

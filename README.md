@@ -49,6 +49,7 @@ alias ihg='pipx run --spec /path/to/ihg ihg'
 | `IHG_SHELL_FLAGS` | Extra words between shell and the command string. Default is a single **`-c`**. Example: `-lc` for a login shell, or `-x -y` for other shells. If set but empty/whitespace-only after parsing, falls back to `-c`. |
 | `IHG_IGNORE` | Comma-separated extra single-word commands to hide (merged with the built-in list). |
 | `IHG_NO_PTY` | If set to `1`/`true`/`yes`, skip the pseudo-terminal path (POSIX only); use if a command misbehaves under a PTY. |
+| `IHG_NO_ZSH_NONOMATCH` | If set, do not prepend ``setopt nonomatch`` for **zsh** (by default ihg avoids zsh exiting early on empty globs like ``~/*.sh``). |
 
 ## Bash and Zsh history
 
@@ -65,7 +66,7 @@ Running **`bash -ilc '…'`** (or login shells) loads your full config but often
 - **zsh:** `~/.zprofile`, `~/.zshrc`
 - **fish:** `~/.config/fish/config.fish` (`abbr` lines)
 
-Later files override earlier ones. Only lines that look like **`alias name=value`** (and simple fish **`abbr`**) are parsed; aliases created only inside conditionals, functions, or plugins are **not** seen. The **first word** of the command is expanded recursively (with a depth limit). Use **`IHG_SHELL_FLAGS`** if you need a heavier shell environment.
+Later files override earlier ones. Only lines that look like **`alias name=value`** (and simple fish **`abbr`**) are parsed; aliases created only inside conditionals, functions, or plugins are **not** seen. Each top-level segment split by **`&&`**, **`||`**, **`|`** (outside quotes/parens), **`;`**, or newline gets its leading word expanded recursively (with a depth limit), including when that word is followed by arguments. Optional leading **`VAR=value`** assignments, **`sudo`** (common flags), **`command`**, **`noglob`**, and **`nocorrect`** are skipped before expansion. A missing space before **`~/`** is tolerated when the name matches an alias (e.g. ``ll~/bin`` → ``ls -l ~/bin``). **zsh** normally errors on globs that match nothing before the command runs; ihg prepends ``setopt nonomatch`` for zsh unless **`IHG_NO_ZSH_NONOMATCH`** is set. Use **`IHG_SHELL_FLAGS`** if you need a heavier shell environment.
 
 **Why `-l` (login) existed:** a login shell reads `*profile` files, which some setups use for PATH, locale, or tools. That is slower; the default is now a plain **`-c`** (non-login). Set e.g. **`IHG_SHELL_FLAGS=-lc`** if you rely on login-only startup.
 

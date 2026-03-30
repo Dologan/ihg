@@ -33,6 +33,18 @@ def _aliases() -> Dict[str, str]:
     return _SHELL_ALIASES
 
 
+def _zsh_nonomatch_prefix(shell: str, command: str) -> str:
+    """
+    zsh aborts with 'no matches found' before running the command when a glob
+    matches nothing (unlike bash). Prepend setopt so ``ls -l ~/*.sh``-style lines work.
+    """
+    if os.path.basename(shell).lower() != "zsh":
+        return command
+    if os.environ.get("IHG_NO_ZSH_NONOMATCH", "").strip() in ("1", "true", "yes"):
+        return command
+    return f"setopt nonomatch 2>/dev/null; {command}"
+
+
 def _shell_invocation(shell: str, command: str) -> list[str]:
     flags = os.environ.get("IHG_SHELL_FLAGS")
     if flags is not None:
@@ -91,12 +103,16 @@ def run_selected(
     the shell under a pseudo-terminal so programs that gate ANSI (e.g. ``ls
     --color=auto``) still see a terminal.
 
+    For **zsh**, ``setopt nonomatch`` is prepended so empty globs (e.g. ``~/*.sh``)
+    do not abort before ``ls`` runs (override with ``IHG_NO_ZSH_NONOMATCH``).
+
     If stdin_data is set, it is sent to the subprocess stdin; the announcement
     line notes piped stdin when ``piped_notice`` is true.
     """
     shell = _shell_path()
     to_run = expand_command_aliases(command, _aliases())
-    argv = _shell_invocation(shell, to_run)
+    exec_cmd = _zsh_nonomatch_prefix(shell, to_run)
+    argv = _shell_invocation(shell, exec_cmd)
     _announce_command(to_run, stdin_data=stdin_data, piped_notice=piped_notice)
 
     _ensure_term_geometry_env()
