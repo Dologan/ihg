@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import curses
-from difflib import SequenceMatcher
+import re
 from typing import List, Optional, Tuple
 
 from ihg.filters import apply_text_filter
@@ -28,25 +28,43 @@ def _visible_pairs(
     return pairs
 
 
-def _cluster_commands(commands: List[str], limit: int = 200, threshold: float = 0.55) -> List[List[str]]:
+_STEP_SPLIT = re.compile(r"\s*(?:&&|\|)\s*")
+
+
+def _step_first_words(cmd: str) -> List[str]:
+    """First token of each &&- or |-separated step; order preserved, duplicates dropped."""
+    s = cmd.strip()
+    if not s:
+        return []
+    keys: List[str] = []
+    seen: set[str] = set()
+    for part in _STEP_SPLIT.split(s):
+        part = part.strip()
+        if not part:
+            continue
+        word = part.split()[0]
+        if word not in seen:
+            seen.add(word)
+            keys.append(word)
+    return keys
+
+
+def _build_step_groups(commands: List[str], limit: int = 500) -> List[Tuple[str, List[str]]]:
+    """
+    (first word of a step, full lines that include that step).
+    A line is listed under every group for each distinct step-initial word it contains.
+    """
     items = commands[:limit]
-    clusters: List[List[str]] = []
-    for c in items:
-        placed = False
-        for g in clusters:
-            rep = g[0]
-            if SequenceMatcher(None, c, rep).quick_ratio() >= threshold:
-                g.append(c)
-                placed = True
-                break
-        if not placed:
-            clusters.append([c])
-    return clusters
+    bucket: dict[str, List[str]] = {}
+    for cmd in items:
+        for key in _step_first_words(cmd):
+            bucket.setdefault(key, []).append(cmd)
+    return sorted(bucket.items(), key=lambda x: x[0].casefold())
 
 
 def _parse_colon(buf: str) -> Optional[str]:
     """
-    Return action name: quit, sort_asc, sort_desc, group, digit_N, unknown.
+    Return action name: quit, reset, sort_asc, sort_desc, group, digit_N, unknown.
     buf must include leading ':'.
     """
     if not buf.startswith(":"):
@@ -54,6 +72,8 @@ def _parse_colon(buf: str) -> Optional[str]:
     body = buf[1:].strip()
     if body == "q":
         return "quit"
+    if body == "r":
+        return "reset"
     if body == "s":
         return "sort_asc"
     if body == "S":
@@ -74,15 +94,35 @@ def run_interactive(
     Run the TUI. Returns subprocess exit code after running a command,
     or 0 when quitting without running.
     """
-
-    def wrapped(stdscr: curses.window) -> int:
-        return _tui_main(stdscr, base_commands, initial_filter, stdin_data)
-
+    stdscr: Optional[curses.window] = None
     try:
-        return curses.wrapper(wrapped)
+        stdscr = curses.initscr()
+        curses.noecho()
+        curses.cbreak()
+        stdscr.keypad(True)
+        try:
+            curses.start_color()
+        except curses.error:
+            pass
+        return _tui_main(stdscr, base_commands, initial_filter, stdin_data)
     except curses.error:
         print("ihg: terminal does not support curses (need a real TTY)", flush=True)
         return 2
+    finally:
+        if stdscr is not None:
+            try:
+                stdscr.keypad(False)
+            except curses.error:
+                pass
+            try:
+                curses.echo()
+                curses.nocbreak()
+            except curses.error:
+                pass
+            try:
+                curses.endwin()
+            except curses.error:
+                pass
 
 
 def _tui_main(
@@ -98,6 +138,16 @@ def _tui_main(
     except curses.error:
         pass
 
+    norm_attr = 0
+    sel_attr = curses.A_REVERSE
+    if curses.has_colors():
+        try:
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_CYAN, -1)
+            sel_attr = curses.color_pair(1) | curses.A_BOLD
+        except curses.error:
+            pass
+
     filter_text = initial_filter
     sort_mode: Optional[str] = None
     colon_entry = False
@@ -107,7 +157,7 @@ def _tui_main(
     scroll = 0
 
     group_mode = False
-    clusters: List[List[str]] = []
+    group_sections: List[Tuple[str, List[str]]] = []
     expanded: set[int] = set()
     group_cursor = 0
     group_scroll = 0
@@ -117,13 +167,14 @@ def _tui_main(
         status = msg
 
     def build_group_rows() -> List[Tuple[str, Optional[str], Optional[int]]]:
-        """Rows: (display, command_to_run_or_None, cluster_index_for_header)."""
+        """Rows: (display, command_to_run_or_None, section_index_for_header)."""
         rows: List[Tuple[str, Optional[str], Optional[int]]] = []
-        for gi, cl in enumerate(clusters):
-            head = f"[{len(cl)}] {cl[0][:120]}{'…' if len(cl[0]) > 120 else ''}"
+        for gi, (key, members) in enumerate(group_sections):
+            kdisp = key[:120] + ("…" if len(key) > 120 else "")
+            head = f"[{len(members)}] {kdisp}"
             rows.append((head, None, gi))
             if gi in expanded:
-                for m in cl:
+                for m in members:
                     disp = f"    {m[:120]}{'…' if len(m) > 120 else ''}"
                     rows.append((disp, m, None))
         return rows
@@ -154,16 +205,18 @@ def _tui_main(
                     ri = group_scroll + i
                     if ri >= total:
                         break
-                    disp, _, gidx = rows[ri]
+                    disp, _, _ = rows[ri]
                     mark = ">" if ri == group_cursor else " "
                     line = f"{mark} {disp}"
                     if len(line) > w - 1:
                         line = line[: w - 2] + "…"
+                    line = line.ljust(w - 1)[: w - 1]
+                    row_attr = sel_attr if ri == group_cursor else norm_attr
                     try:
-                        stdscr.addstr(i, 0, line)
+                        stdscr.addstr(i, 0, line, row_attr)
                     except curses.error:
                         pass
-            hint = " Enter: run leaf / toggle group  Esc: back  +/-: expand/collapse "
+            hint = " Enter: run/toggle  :r default  Esc: back  +/- "
         else:
             pairs = _visible_pairs(base_commands, filter_text, sort_mode)
             total = len(pairs)
@@ -185,13 +238,14 @@ def _tui_main(
                     body = cmd.replace("\n", " ")
                     if len(body) > w - 8:
                         body = body[: w - 9] + "…"
-                    line = f"{mark}{label} {body}"
+                    line = f"{mark}{label} {body}".ljust(w - 1)[: w - 1]
+                    row_attr = sel_attr if ri == cursor else norm_attr
                     try:
-                        stdscr.addstr(i, 0, line.ljust(w - 1)[: w - 1])
+                        stdscr.addstr(i, 0, line, row_attr)
                     except curses.error:
                         pass
             so = f" [{sort_mode}]" if sort_mode else ""
-            hint = f" ↑/↓ j/k nav  Enter run{so}  :cmds  Esc clear sort/filter "
+            hint = f" ↑/↓ j/k  Enter run{so}  :cmds  :r reset  Esc clear "
 
         foot0 = h - 2
         foot1 = h - 1
@@ -213,6 +267,8 @@ def _tui_main(
 
     def run_cmd(cmd: str) -> int:
         piped = stdin_data is not None
+        # Release the TTY for the child; our init/finally runs only after we return.
+        curses.endwin()
         return run_selected(cmd, stdin_data, piped_notice=piped)
 
     while True:
@@ -240,6 +296,17 @@ def _tui_main(
                 colon_buffer = ""
                 if act == "quit":
                     return 0
+                if act == "reset":
+                    sort_mode = None
+                    group_mode = False
+                    group_sections.clear()
+                    expanded.clear()
+                    group_cursor = 0
+                    group_scroll = 0
+                    cursor = 0
+                    scroll = 0
+                    status_set("")
+                    continue
                 if act == "sort_asc":
                     sort_mode = "asc"
                     status_set("sort A-Z")
@@ -255,13 +322,13 @@ def _tui_main(
                 if act == "group":
                     pairs = _visible_pairs(base_commands, filter_text, sort_mode)
                     cmds = [p[0] for p in pairs]
-                    clusters.clear()
-                    clusters.extend(_cluster_commands(cmds))
+                    group_sections.clear()
+                    group_sections.extend(_build_step_groups(cmds))
                     expanded.clear()
                     group_mode = True
                     group_cursor = 0
                     group_scroll = 0
-                    status_set("similarity groups (:g)")
+                    status_set("groups by command step (:g)")
                     continue
                 if act and act.startswith("digit_"):
                     d = int(act[-1])
@@ -284,6 +351,10 @@ def _tui_main(
             continue
 
         if group_mode:
+            if ch == ord(":"):
+                colon_entry = True
+                colon_buffer = ":"
+                continue
             rows = build_group_rows()
             total = len(rows)
             if ch in (curses.KEY_UP, ord("k")):
