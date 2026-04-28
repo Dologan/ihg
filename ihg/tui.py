@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import curses
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -15,9 +16,24 @@ from ihg.history import (
     load_commands_newest_first,
     write_clean_histfile_backup,
 )
-from ihg.run import run_selected
+from ihg.clipboard import copy_text
+from ihg.run import expand_command_for_shell, run_selected
 
 Pair = Tuple[str, int]  # (command, recency_rank)
+
+_HELP_LINES: Tuple[str, ...] = (
+    "ihg — quick help",
+    "",
+    "Move        ↑/↓ or j/k",
+    "Run         Enter (footer [COPY] = copy alias line, then quit)",
+    "Clipboard   ← run mode   → copy mode   :c = copy once & quit",
+    "Filter      type text; empty filter + : for colon commands",
+    "Colon       :q quit   :r reset   :s :S sort   :g groups   :h this help",
+    "            :e edit   :d delete   :b backup   :0–:9 pick",
+    "Groups      Space on a header toggles expand/collapse; +/- also",
+    "",
+    "Esc         closes help (here) or clears filter / leaves group view",
+)
 
 
 def _visible_pairs(
@@ -72,8 +88,8 @@ def _build_step_groups(commands: List[str], limit: int = 500) -> List[Tuple[str,
 
 def _parse_colon(buf: str) -> Optional[str]:
     """
-    Return action name: quit, reset, sort_asc, sort_desc, group, edit, delete,
-    backup_default, backup_to:PATH, digit_N, unknown.
+    Return action name: quit, reset, sort_asc, sort_desc, group, edit, help,
+    copy_clipboard, delete, backup_default, backup_to:PATH, digit_N, unknown.
     buf must include leading ':'.
     """
     if not buf.startswith(":"):
@@ -91,6 +107,10 @@ def _parse_colon(buf: str) -> Optional[str]:
         return "group"
     if body == "e":
         return "edit"
+    if body == "h":
+        return "help"
+    if body == "c":
+        return "copy_clipboard"
     if body == "d":
         return "delete"
     if body == "b":
@@ -111,7 +131,7 @@ def run_interactive(
 ) -> int:
     """
     Run the TUI. Returns subprocess exit code after running a command,
-    or 0 when quitting without running.
+    0 when quitting without running, or 0/1 after copying to the clipboard.
     """
     stdscr: Optional[curses.window] = None
     try:
@@ -168,11 +188,14 @@ def _tui_main(
 
     norm_attr = 0
     sel_attr = curses.A_REVERSE
+    clip_sel_attr = curses.A_STANDOUT | curses.A_BOLD
     if curses.has_colors():
         try:
             curses.use_default_colors()
             curses.init_pair(1, curses.COLOR_CYAN, -1)
             sel_attr = curses.color_pair(1) | curses.A_BOLD
+            curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_BLUE)
+            clip_sel_attr = curses.color_pair(2) | curses.A_BOLD
         except curses.error:
             pass
 
@@ -193,6 +216,14 @@ def _tui_main(
     edit_mode = False
     edit_buffer = ""
     edit_curs = 0
+    clipboard_mode = False
+    help_mode = False
+
+    try:
+        _hst = histfile_path.stat()
+        hist_track: Tuple[int, int] = (_hst.st_mtime_ns, _hst.st_size)
+    except OSError:
+        hist_track = (0, 0)
 
     def status_set(msg: str) -> None:
         nonlocal status
@@ -200,7 +231,7 @@ def _tui_main(
 
     def reload_from_disk() -> None:
         nonlocal cursor, scroll, group_mode, group_sections, expanded
-        nonlocal group_cursor, group_scroll
+        nonlocal group_cursor, group_scroll, hist_track, clipboard_mode, help_mode
         nf = load_commands_newest_first(histfile_path)
         b, _ = build_processed(nf)
         base_commands.clear()
@@ -210,6 +241,8 @@ def _tui_main(
         expanded.clear()
         group_cursor = 0
         group_scroll = 0
+        clipboard_mode = False
+        help_mode = False
         pairs = _visible_pairs(base_commands, filter_text, sort_mode)
         if not pairs:
             cursor = 0
@@ -217,6 +250,21 @@ def _tui_main(
         else:
             cursor = min(cursor, len(pairs) - 1)
             scroll = min(scroll, max(0, cursor))
+        try:
+            st = histfile_path.stat()
+            hist_track = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            pass
+
+    def reload_if_histfile_changed() -> None:
+        try:
+            st = histfile_path.stat()
+        except OSError:
+            return
+        tok = (st.st_mtime_ns, st.st_size)
+        if tok == hist_track:
+            return
+        reload_from_disk()
 
     def selected_command() -> Optional[str]:
         if group_mode:
@@ -254,6 +302,28 @@ def _tui_main(
         footer_h = 2
         main_h = max(1, h - footer_h)
 
+        if help_mode:
+            for ri, line in enumerate(_HELP_LINES):
+                if ri >= h - 1:
+                    break
+                clipped = line[: w - 1].ljust(w - 1)[: w - 1]
+                try:
+                    stdscr.addstr(ri, 0, clipped)
+                except curses.error:
+                    pass
+            foot = " Esc — close help "
+            try:
+                stdscr.addstr(
+                    h - 1,
+                    0,
+                    foot.ljust(w - 1)[: w - 1],
+                    curses.A_REVERSE,
+                )
+            except curses.error:
+                pass
+            stdscr.refresh()
+            return
+
         if group_mode:
             rows = build_group_rows()
             total = len(rows)
@@ -275,12 +345,21 @@ def _tui_main(
                     if len(line) > w - 1:
                         line = line[: w - 2] + "…"
                     line = line.ljust(w - 1)[: w - 1]
-                    row_attr = sel_attr if ri == group_cursor else norm_attr
+                    if ri == group_cursor and clipboard_mode:
+                        row_attr = clip_sel_attr
+                    elif ri == group_cursor:
+                        row_attr = sel_attr
+                    else:
+                        row_attr = norm_attr
                     try:
                         stdscr.addstr(i, 0, line, row_attr)
                     except curses.error:
                         pass
-            hint = " Enter  :e/:d/:b  :r  Esc back  +/- "
+            cm = " [COPY]" if clipboard_mode else ""
+            hint = (
+                f" Enter{cm}  Space hdr  +/- expand  ←run →copy  "
+                ":e/:d/:b/:c/:h  :r  Esc back "
+            )
         else:
             pairs = _visible_pairs(base_commands, filter_text, sort_mode)
             total = len(pairs)
@@ -303,14 +382,21 @@ def _tui_main(
                     if len(body) > w - 8:
                         body = body[: w - 9] + "…"
                     line = f"{mark}{label} {body}".ljust(w - 1)[: w - 1]
-                    row_attr = sel_attr if ri == cursor else norm_attr
+                    if ri == cursor and clipboard_mode:
+                        row_attr = clip_sel_attr
+                    elif ri == cursor:
+                        row_attr = sel_attr
+                    else:
+                        row_attr = norm_attr
                     try:
                         stdscr.addstr(i, 0, line, row_attr)
                     except curses.error:
                         pass
             so = f" [{sort_mode}]" if sort_mode else ""
+            cm = " [COPY]" if clipboard_mode else ""
             hint = (
-                f" ↑/↓ j/k  Enter run{so}  :e edit :d del :b backup  :r  Esc clear "
+                f" ↑/↓ j/k  Enter{cm}{so}  ←run →copy  "
+                ":e/:d/:b/:c/:h  :r  Esc clear "
             )
 
         foot0 = h - 2
@@ -355,9 +441,32 @@ def _tui_main(
         curses.endwin()
         return run_selected(cmd, stdin_data, piped_notice=piped)
 
+    def copy_selected_and_exit(cmd: str) -> int:
+        curses.endwin()
+        expanded = expand_command_for_shell(cmd)
+        ok = copy_text(expanded)
+        if ok:
+            print(
+                f"ihg: copied to clipboard ({len(expanded)} chars)",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "ihg: clipboard unavailable (try pbcopy, wl-copy, xclip, or xsel)",
+                file=sys.stderr,
+            )
+        return 0 if ok else 1
+
     while True:
+        reload_if_histfile_changed()
         draw()
         ch = stdscr.getch()
+
+        if help_mode:
+            if ch == 27:
+                help_mode = False
+                status_set("")
+            continue
 
         if ch == 27:  # Esc
             if edit_mode:
@@ -366,8 +475,11 @@ def _tui_main(
                 continue
             if group_mode:
                 group_mode = False
+                help_mode = False
                 status_set("")
                 continue
+            clipboard_mode = False
+            help_mode = False
             filter_text = ""
             colon_entry = False
             colon_buffer = ""
@@ -393,6 +505,8 @@ def _tui_main(
                     group_scroll = 0
                     cursor = 0
                     scroll = 0
+                    clipboard_mode = False
+                    help_mode = False
                     status_set("")
                     continue
                 if act == "sort_asc":
@@ -427,8 +541,18 @@ def _tui_main(
                     edit_buffer = cmd
                     edit_curs = len(edit_buffer)
                     group_mode = False
-                    status_set("edit then Enter (appends hist, runs)  Esc cancel")
+                    status_set("edit: Enter run or copy  Esc cancel")
                     continue
+                if act == "help":
+                    help_mode = True
+                    status_set("")
+                    continue
+                if act == "copy_clipboard":
+                    cmd = selected_command()
+                    if cmd is None:
+                        status_set("select a command to copy")
+                        continue
+                    return copy_selected_and_exit(cmd)
                 if act == "delete":
                     cmd = selected_command()
                     if cmd is None:
@@ -503,6 +627,8 @@ def _tui_main(
                     edit_mode = False
                     status_set("empty command")
                     continue
+                if clipboard_mode:
+                    return copy_selected_and_exit(cmd)
                 try:
                     append_histfile_line(
                         histfile_path, cmd, is_zsh=histfile_zsh
@@ -567,23 +693,29 @@ def _tui_main(
                     if gidx is not None:
                         expanded.discard(gidx)
                 continue
-            if ch in (curses.KEY_LEFT,):
-                if total > 0:
-                    _, _, gidx = rows[group_cursor]
-                    if gidx is not None:
+            if ch == ord(" "):
+                if total == 0:
+                    continue
+                _, cmd, gidx = rows[group_cursor]
+                if cmd is None and gidx is not None:
+                    if gidx in expanded:
                         expanded.discard(gidx)
+                    else:
+                        expanded.add(gidx)
+                continue
+            if ch in (curses.KEY_LEFT,):
+                clipboard_mode = False
                 continue
             if ch in (curses.KEY_RIGHT,):
-                if total > 0:
-                    _, _, gidx = rows[group_cursor]
-                    if gidx is not None:
-                        expanded.add(gidx)
+                clipboard_mode = True
                 continue
             if ch in (curses.KEY_ENTER, 10, 13):
                 if total == 0:
                     continue
                 disp, cmd, gidx = rows[group_cursor]
                 if cmd:
+                    if clipboard_mode:
+                        return copy_selected_and_exit(cmd)
                     return run_cmd(cmd)
                 if gidx is not None:
                     if gidx in expanded:
@@ -606,10 +738,19 @@ def _tui_main(
                 cursor += 1
             continue
 
+        if ch in (curses.KEY_LEFT,):
+            clipboard_mode = False
+            continue
+        if ch in (curses.KEY_RIGHT,):
+            clipboard_mode = True
+            continue
+
         if ch in (curses.KEY_ENTER, 10, 13):
             if total == 0:
                 continue
             cmd, _ = pairs[cursor]
+            if clipboard_mode:
+                return copy_selected_and_exit(cmd)
             return run_cmd(cmd)
 
         if ch in (curses.KEY_BACKSPACE, 127, 8):

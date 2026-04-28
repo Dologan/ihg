@@ -7,6 +7,8 @@ def test_parse_colon():
     assert _parse_colon(":q") == "quit"
     assert _parse_colon(":r") == "reset"
     assert _parse_colon(":e") == "edit"
+    assert _parse_colon(":c") == "copy_clipboard"
+    assert _parse_colon(":h") == "help"
     assert _parse_colon(":d") == "delete"
     assert _parse_colon(":b") == "backup_default"
     assert _parse_colon(":b /tmp/x") == "backup_to:/tmp/x"

@@ -6,7 +6,7 @@ import sys
 
 from ihg.filters import build_processed
 from ihg.history import histfile_is_zsh, histfile_path, load_commands_newest_first
-from ihg.run import preload_aliases
+from ihg.run import clear_parent_shell_eval_file, preload_aliases
 from ihg.tui import run_interactive
 
 
@@ -43,6 +43,7 @@ def main() -> int:
         return 2
 
     preload_aliases()
+    clear_parent_shell_eval_file()
 
     try:
         return run_interactive(base, initial_filter, stdin_data, path, is_zsh)

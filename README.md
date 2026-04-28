@@ -50,11 +50,12 @@ alias ihg='pipx run --spec /path/to/ihg ihg'
 | `IHG_IGNORE` | Comma-separated extra single-word commands to hide (merged with the built-in list). |
 | `IHG_NO_PTY` | If set to `1`/`true`/`yes`, skip the pseudo-terminal path (POSIX only); use if a command misbehaves under a PTY. |
 | `IHG_NO_ZSH_NONOMATCH` | If set, do not prepend ``setopt nonomatch`` for **zsh** (by default ihg avoids zsh exiting early on empty globs like ``~/*.sh``). |
+| `IHG_NO_PARENT_SHELL_EVAL` | If set, do not write **cd** / **pushd** / **popd** to the parent eval file; run them only under ``shell -c`` (they still cannot change your interactive cwd). |
 
 ## Bash and Zsh history
 
 - **Zsh:** extended history lines (`: timestamp:duration;command`) are detected automatically. Use `setopt SHARE_HISTORY` / `INC_APPEND_HISTORY` and a valid `HISTFILE` so the file stays up to date.
-- **Bash:** plain lines and timestamp pairs (`#unix_time` followed by the command line) are supported, including simple continuation lines that start with a space.
+- **Bash:** plain lines and timestamp pairs (`#unix_time` followed by the command line) are supported, including simple continuation lines that start with a space. By default Bash often updates `HISTFILE` only when the shell exits, so ihg cannot show commands from the **current** session until they are flushed. Use e.g. `shopt -s histappend` and `PROMPT_COMMAND='history -a'` (or `history -a` from `PROMPT_COMMAND` together with your existing hook) so new lines are appended after each command. While ihg is open, it **re-reads** the history file when its size or modification time changes, so entries appear after the next flush without restarting ihg.
 
 If `HISTFILE` is missing or the path is not a regular file, `ihg` exits with an error.
 
@@ -73,11 +74,55 @@ Later files override earlier ones. Only lines that look like **`alias name=value
 ## Usage
 
 - **Navigate:** arrow keys or `j` / `k`.
-- **Filter:** type text; matching is case-insensitive substring. With an **empty** filter, `:` opens colon-commands (so `:1`, `:q`, etc. are not eaten as filter text). Once the filter is non-empty, `:` is a normal character.
-- **Run:** **Enter** on a line runs it. **stderr** shows `ihg: running: …` first (or `ihg: running with piped stdin: …` when ihg’s stdin is a pipe). On Unix, the shell runs in a **pseudo-terminal** when both stdin and stdout are TTYs so tools like `ls --color=auto` still emit color.
+- **Filter:** type text; matching is case-insensitive substring. With an **empty** filter, `:` opens colon-commands (so `:1`, `:q`, `:h`, etc. are not eaten as filter text). Once the filter is non-empty, `:` is a normal character.
+- **Run:** **Enter** runs the highlighted line (alias-expanded). **stderr** shows `ihg: running: …` first (or `ihg: running with piped stdin: …` when ihg’s stdin is a pipe). On Unix, the shell runs in a **pseudo-terminal** when both stdin and stdout are TTYs so tools like `ls --color=auto` still emit color.
+- **Copy:** **Right arrow** turns on **clipboard mode** (hint shows `[COPY]`; the selected row uses a different background when color is available). **Left arrow** turns it off (**run mode**). **Enter** in clipboard mode copies the **alias-expanded** command and exits (needs **pbcopy** / **wl-copy** / **xclip** / **xsel**). **`:c`** copies the current selection once and quits without toggling mode.
+- **Help:** **`:h`** (empty filter, then `:` `h` Enter) opens a short key reference; **Esc** closes it.
 - **Quit:** `:q` then **Enter** (with an empty filter, type `:` first).
 - **Sort:** `:s` (A-Z) or `:S` (Z-A) on the current matches. Numeric labels `0`–`9` always refer to the **ten newest** unique (non-trivial) commands overall, not the sorted row order. **Esc** clears filter and sort.
-- **Step groups:** `:g` groups by the first word of each `&&` / `|` step. **+** / **-** or **Right** / **Left** expand or collapse; **Enter** on a leaf runs the command, on a header toggles expansion. **Esc** leaves group view.
+- **Step groups:** `:g` groups by the first word of each `&&` / `|` step. **+** / **-** expand or collapse; **Space** on a **section header** toggles expand/collapse; **Enter** on a header does the same. **Enter** on a leaf runs or copies (same **←**/ **→** mode as the flat list). **Left** / **Right** in group view only change copy vs run mode. **Esc** leaves group view.
+
+## `cd`, `pushd`, and `popd`
+
+A child process cannot change the working directory of the shell that started ihg. Plain **`SHELL -c 'cd …'`** exits successfully but leaves you in the same directory.
+
+For a **single-line** **cd** / **pushd** / **popd** (no `&&`, `||`, `|`, or `;` on the line), ihg writes the expanded command to **`$XDG_STATE_HOME/ihg/last_eval.sh`**, or **`~/.local/state/ihg/last_eval.sh`** if `XDG_STATE_HOME` is unset. That file is **cleared when ihg starts**. Wrap **`ihg`** so your shell **sources** it after each run, for example:
+
+**bash / zsh**
+
+```bash
+ihg() {
+  command ihg "$@"
+  local _ec=$?
+  local _f="${XDG_STATE_HOME:-$HOME/.local/state}/ihg/last_eval.sh"
+  if [[ -s "$_f" ]]; then
+    # shellcheck source=/dev/null
+    . "$_f"
+    : >"$_f"
+  fi
+  return "$_ec"
+}
+```
+
+**fish**
+
+```fish
+function ihg
+    command ihg $argv
+    set -l _ec $status
+    set -l _f "$HOME/.local/state/ihg/last_eval.sh"
+    if test -n "$XDG_STATE_HOME"
+        set _f "$XDG_STATE_HOME/ihg/last_eval.sh"
+    end
+    if test -s "$_f"
+        source "$_f"
+        echo -n '' >"$_f"
+    end
+    return $_ec
+end
+```
+
+Compound lines such as **`cd foo && make`** still run entirely inside **`shell -c`**, where the **cd** applies to that subprocess.
 
 ## Piped stdin
 
