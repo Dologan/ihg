@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import time
 from pathlib import Path
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from ihg.filters import build_processed
 
@@ -21,6 +22,82 @@ def histfile_path() -> Path | None:
     if path.is_file():
         return path
     return None
+
+
+def _shell_path_for_sync() -> str:
+    return os.environ.get("IHG_SHELL") or os.environ.get("SHELL") or "/bin/bash"
+
+
+def _shell_invokes_bash_history(shell: str) -> bool:
+    """True if ``shell`` is bash or ``sh`` resolving to bash (e.g. macOS /bin/sh)."""
+    base = os.path.basename(shell).lower()
+    if base == "bash":
+        return True
+    if base != "sh":
+        return False
+    try:
+        return os.path.basename(os.path.realpath(shell)).lower() == "bash"
+    except OSError:
+        return False
+
+
+def sync_shell_history_to_disk_best_effort(histfile: Optional[Path] = None) -> None:
+    """
+    Ask ``$SHELL`` (or ``IHG_SHELL``) to flush in-memory history to the history
+    file before ihg reads it.
+
+    **zsh:** runs ``zsh -f -c 'fc -AI'`` (``fc`` **-A** / **-I** per zsh: append
+    and reconcile with ``HISTFILE``). Uses ``-f`` so startup stays fast;
+    ``HISTFILE`` should be **exported** in the environment (not only set
+    inside ``.zshrc``).
+
+    **bash** (including ``sh`` when it resolves to bash): runs
+    ``bash --noprofile --norc -c 'history -a'``, which appends the subshell’s
+    session lines to ``HISTFILE`` (same builtin as in an interactive bash).
+
+    If ``histfile`` is passed (ihg’s resolved path), it is set as ``HISTFILE`` in
+    the subprocess environment so **bash** / **zsh** target the same file even
+    when only ``IHG_HISTFILE`` was set in the parent.
+
+    This cannot flush another process's history unless that shell has already
+    written to the file or ``HISTFILE`` is shared; it is a best-effort nudge.
+
+    Set ``IHG_NO_STARTUP_HISTORY_SYNC`` to skip.
+    """
+    if os.environ.get("IHG_NO_STARTUP_HISTORY_SYNC", "").strip() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return
+    shell = _shell_path_for_sync().strip()
+    if not shell:
+        return
+    base = os.path.basename(shell).lower()
+    if base == "zsh":
+        argv = [shell, "-f", "-c", "fc -AI"]
+    elif _shell_invokes_bash_history(shell):
+        bash_exe = os.path.realpath(shell) if base == "sh" else shell
+        argv = [bash_exe, "--noprofile", "--norc", "-c", "history -a"]
+    elif base == "fish":
+        argv = [shell, "-c", "history save"]
+    else:
+        return
+    env: Optional[dict[str, str]] = None
+    if histfile is not None:
+        env = {**os.environ, "HISTFILE": str(histfile.resolve())}
+    try:
+        subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def read_histfile_text(path: Path) -> str:

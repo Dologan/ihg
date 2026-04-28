@@ -5,7 +5,12 @@ from __future__ import annotations
 import sys
 
 from ihg.filters import build_processed
-from ihg.history import histfile_is_zsh, histfile_path, load_commands_newest_first
+from ihg.history import (
+    histfile_is_zsh,
+    histfile_path,
+    load_commands_newest_first,
+    sync_shell_history_to_disk_best_effort,
+)
 from ihg.run import clear_parent_shell_eval_file, preload_aliases
 from ihg.tui import run_interactive
 
@@ -29,6 +34,7 @@ def main() -> int:
         )
         return 2
 
+    sync_shell_history_to_disk_best_effort(path)
     cmds_nf = load_commands_newest_first(path)
     base, _ = build_processed(cmds_nf)
     is_zsh = histfile_is_zsh(path)

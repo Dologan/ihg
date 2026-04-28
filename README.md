@@ -51,11 +51,13 @@ alias ihg='pipx run --spec /path/to/ihg ihg'
 | `IHG_NO_PTY` | If set to `1`/`true`/`yes`, skip the pseudo-terminal path (POSIX only); use if a command misbehaves under a PTY. |
 | `IHG_NO_ZSH_NONOMATCH` | If set, do not prepend ``setopt nonomatch`` for **zsh** (by default ihg avoids zsh exiting early on empty globs like ``~/*.sh``). |
 | `IHG_NO_PARENT_SHELL_EVAL` | If set, do not write **cd** / **pushd** / **popd** to the parent eval file; run them only under ``shell -c`` (they still cannot change your interactive cwd). |
+| `IHG_NO_STARTUP_HISTORY_SYNC` | If set, skip the pre-load subprocess that asks **zsh** for ``fc -AI``, **bash** for ``history -a``, or **fish** for ``history save`` (see below). |
 
 ## Bash and Zsh history
 
 - **Zsh:** extended history lines (`: timestamp:duration;command`) are detected automatically. Use `setopt SHARE_HISTORY` / `INC_APPEND_HISTORY` and a valid `HISTFILE` so the file stays up to date.
 - **Bash:** plain lines and timestamp pairs (`#unix_time` followed by the command line) are supported, including simple continuation lines that start with a space. By default Bash often updates `HISTFILE` only when the shell exits, so ihg cannot show commands from the **current** session until they are flushed. Use e.g. `shopt -s histappend` and `PROMPT_COMMAND='history -a'` (or `history -a` from `PROMPT_COMMAND` together with your existing hook) so new lines are appended after each command. While ihg is open, it **re-reads** the history file when its size or modification time changes, so entries appear after the next flush without restarting ihg.
+- **Startup sync:** Before reading the history file, ihg runs a short subprocess: **bash** uses ``bash --noprofile --norc -c 'history -a'`` (the usual **append session to ``HISTFILE``** builtin); **zsh** uses ``zsh -f -c 'fc -AI'``; **fish** uses ``fish -c 'history save'``. If ``SHELL`` is ``sh`` but resolves to **bash** (e.g. some macOS setups), the real bash binary is used for ``history -a``. ihg passes the resolved history file path as **``HISTFILE``** in that subprocess so **bash** and **zsh** write to the same file even when only ``IHG_HISTFILE`` was set in the parent. This only affects **that** subprocess’s history; it **cannot** flush another interactive shell’s in-memory lines until that shell appends to the file (see **``shopt -s histappend``** and **``PROMPT_COMMAND``** above). For zsh with ``-f``, still export **``HISTFILE``** in the parent when possible. Disable with **`IHG_NO_STARTUP_HISTORY_SYNC`** if you prefer not to run this step.
 
 If `HISTFILE` is missing or the path is not a regular file, `ihg` exits with an error.
 
@@ -88,13 +90,21 @@ A child process cannot change the working directory of the shell that started ih
 
 For a **single-line** **cd** / **pushd** / **popd** (no `&&`, `||`, `|`, or `;` on the line), ihg writes the expanded command to **`$XDG_STATE_HOME/ihg/last_eval.sh`**, or **`~/.local/state/ihg/last_eval.sh`** if `XDG_STATE_HOME` is unset. That file is **cleared when ihg starts**. Wrap **`ihg`** so your shell **sources** it after each run, for example:
 
-**bash / zsh**
+**bash and zsh**
+
+Before **`command ihg`**, the wrapper flushes your **current** shell history to **`HISTFILE`**: **zsh** runs **`builtin fc -AI`** (append + reconcile with the file—the same step ihg’s own subprocess cannot perform for your interactive session), and **bash** runs **`history -a`**. Errors from those builtins are ignored so a failed flush never blocks the UI.
 
 ```bash
 ihg() {
+  local _ec _f
+  if [ -n "${ZSH_VERSION:-}" ]; then
+    builtin fc -AI 2>/dev/null
+  elif [ -n "${BASH_VERSION:-}" ]; then
+    history -a 2>/dev/null
+  fi
   command ihg "$@"
-  local _ec=$?
-  local _f="${XDG_STATE_HOME:-$HOME/.local/state}/ihg/last_eval.sh"
+  _ec=$?
+  _f="${XDG_STATE_HOME:-$HOME/.local/state}/ihg/last_eval.sh"
   if [[ -s "$_f" ]]; then
     # shellcheck source=/dev/null
     . "$_f"
