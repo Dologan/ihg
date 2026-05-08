@@ -75,7 +75,7 @@ Later files override earlier ones. Only lines that look like **`alias name=value
 
 ## Usage
 
-- **Navigate:** arrow keys or `j` / `k`.
+- **Navigate:** arrow keys (↑/↓).
 - **Filter:** type text; matching is case-insensitive substring. With an **empty** filter, `:` opens colon-commands (so `:1`, `:q`, `:h`, etc. are not eaten as filter text). Once the filter is non-empty, `:` is a normal character.
 - **Run:** **Enter** runs the highlighted line (alias-expanded). **stderr** shows `ihg: running: …` first (or `ihg: running with piped stdin: …` when ihg’s stdin is a pipe). On Unix, the shell runs in a **pseudo-terminal** when both stdin and stdout are TTYs so tools like `ls --color=auto` still emit color.
 - **Copy:** **Right arrow** turns on **clipboard mode** (hint shows `[COPY]`; the selected row uses a different background when color is available). **Left arrow** turns it off (**run mode**). **Enter** in clipboard mode copies the **alias-expanded** command and exits (needs **pbcopy** / **wl-copy** / **xclip** / **xsel**). **`:c`** copies the current selection once and quits without toggling mode.

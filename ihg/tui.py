@@ -24,7 +24,7 @@ Pair = Tuple[str, int]  # (command, recency_rank)
 _HELP_LINES: Tuple[str, ...] = (
     "ihg — quick help",
     "",
-    "Move        ↑/↓ or j/k",
+    "Move        ↑/↓",
     "Run         Enter (footer [COPY] = copy alias line, then quit)",
     "Clipboard   ← run mode   → copy mode   :c = copy once & quit",
     "Filter      type text; empty filter + : for colon commands",
@@ -395,7 +395,7 @@ def _tui_main(
             so = f" [{sort_mode}]" if sort_mode else ""
             cm = " [COPY]" if clipboard_mode else ""
             hint = (
-                f" ↑/↓ j/k  Enter{cm}{so}  ←run →copy  "
+                f" ↑/↓  Enter{cm}{so}  ←run →copy  "
                 ":e/:d/:b/:c/:h  :r  Esc clear "
             )
 
@@ -673,11 +673,11 @@ def _tui_main(
                 continue
             rows = build_group_rows()
             total = len(rows)
-            if ch in (curses.KEY_UP, ord("k")):
+            if ch in (curses.KEY_UP,):
                 if group_cursor > 0:
                     group_cursor -= 1
                 continue
-            if ch in (curses.KEY_DOWN, ord("j")):
+            if ch in (curses.KEY_DOWN,):
                 if group_cursor < max(0, total - 1):
                     group_cursor += 1
                 continue
@@ -729,11 +729,11 @@ def _tui_main(
         pairs = _visible_pairs(base_commands, filter_text, sort_mode)
         total = len(pairs)
 
-        if ch in (curses.KEY_UP, ord("k")):
+        if ch in (curses.KEY_UP,):
             if cursor > 0:
                 cursor -= 1
             continue
-        if ch in (curses.KEY_DOWN, ord("j")):
+        if ch in (curses.KEY_DOWN,):
             if cursor < max(0, total - 1):
                 cursor += 1
             continue
