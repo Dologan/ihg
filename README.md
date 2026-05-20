@@ -78,11 +78,12 @@ Later files override earlier ones. Only lines that look like **`alias name=value
 - **Navigate:** arrow keys (↑/↓).
 - **Filter:** type text; matching is case-insensitive substring. With an **empty** filter, `:` opens colon-commands (so `:1`, `:q`, `:h`, etc. are not eaten as filter text). Once the filter is non-empty, `:` is a normal character.
 - **Run:** **Enter** runs the highlighted line (alias-expanded). **stderr** shows `ihg: running: …` first (or `ihg: running with piped stdin: …` when ihg’s stdin is a pipe). On Unix, the shell runs in a **pseudo-terminal** when both stdin and stdout are TTYs so tools like `ls --color=auto` still emit color.
-- **Copy:** **Right arrow** turns on **clipboard mode** (hint shows `[COPY]`; the selected row uses a different background when color is available). **Left arrow** turns it off (**run mode**). **Enter** in clipboard mode copies the **alias-expanded** command and exits (needs **pbcopy** / **wl-copy** / **xclip** / **xsel**). **`:c`** copies the current selection once and quits without toggling mode.
+- **Edit:** **←** (left arrow) or **`:e`** opens the selected line in the footer editor (the list row uses a **different highlight** from copy mode when colors are available: magenta vs blue). In the editor, **←** / **→** move the cursor inside the line.
+- **Copy:** **→** (right arrow) turns on **clipboard mode** (hint shows `[COPY]`). **Enter** in clipboard mode copies the **alias-expanded** command and exits (needs **pbcopy** / **wl-copy** / **xclip** / **xsel**). If the clipboard is unavailable (e.g. some SSH sessions), **stderr** still shows an error and the **full expanded line is printed on stdout** so you can copy it manually. **`:c`** copies the current selection once and quits without toggling mode. **Esc** clears the filter and turns off copy mode.
 - **Help:** **`:h`** (empty filter, then `:` `h` Enter) opens a short key reference; **Esc** closes it.
 - **Quit:** `:q` then **Enter** (with an empty filter, type `:` first).
 - **Sort:** `:s` (A-Z) or `:S` (Z-A) on the current matches. Numeric labels `0`–`9` always refer to the **ten newest** unique (non-trivial) commands overall, not the sorted row order. **Esc** clears filter and sort.
-- **Step groups:** `:g` groups by the first word of each `&&` / `|` step. **+** / **-** expand or collapse; **Space** on a **section header** toggles expand/collapse; **Enter** on a header does the same. **Enter** on a leaf runs or copies (same **←**/ **→** mode as the flat list). **Left** / **Right** in group view only change copy vs run mode. **Esc** leaves group view.
+- **Step groups:** `:g` groups by the first word of each `&&` / `|` step. **+** / **-** expand or collapse; **Space** on a **section header** toggles expand/collapse; **Enter** on a header does the same. **Enter** on a leaf runs or copies (same **←** edit / **→** copy as the flat list). **Esc** leaves group view.
 
 ## `cd`, `pushd`, and `popd`
 

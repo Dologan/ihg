@@ -26,7 +26,9 @@ _HELP_LINES: Tuple[str, ...] = (
     "",
     "Move        ↑/↓",
     "Run         Enter (footer [COPY] = copy alias line, then quit)",
-    "Clipboard   ← run mode   → copy mode   :c = copy once & quit",
+    "Edit        ← or :e (row highlighted; differs from [COPY] color)",
+    "Clipboard   → copy mode   :c = copy once & quit   Esc clears filter/copy",
+    "Copy fail   expanded line printed on stdout for manual copy (e.g. SSH)",
     "Filter      type text; empty filter + : for colon commands",
     "Colon       :q quit   :r reset   :s :S sort   :g groups   :h this help",
     "            :e edit   :d delete   :b backup   :0–:9 pick",
@@ -189,6 +191,7 @@ def _tui_main(
     norm_attr = 0
     sel_attr = curses.A_REVERSE
     clip_sel_attr = curses.A_STANDOUT | curses.A_BOLD
+    edit_sel_attr = curses.A_UNDERLINE | curses.A_BOLD
     if curses.has_colors():
         try:
             curses.use_default_colors()
@@ -196,6 +199,8 @@ def _tui_main(
             sel_attr = curses.color_pair(1) | curses.A_BOLD
             curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_BLUE)
             clip_sel_attr = curses.color_pair(2) | curses.A_BOLD
+            curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_MAGENTA)
+            edit_sel_attr = curses.color_pair(3) | curses.A_BOLD
         except curses.error:
             pass
 
@@ -229,9 +234,22 @@ def _tui_main(
         nonlocal status
         status = msg
 
+    def open_edit_from_selection() -> None:
+        nonlocal edit_mode, edit_buffer, edit_curs, group_mode
+        cmd = selected_command()
+        if cmd is None:
+            status_set("select a command line to edit")
+            return
+        edit_mode = True
+        edit_buffer = cmd
+        edit_curs = len(edit_buffer)
+        group_mode = False
+        status_set("edit: Enter run or copy  Esc cancel")
+
     def reload_from_disk() -> None:
         nonlocal cursor, scroll, group_mode, group_sections, expanded
         nonlocal group_cursor, group_scroll, hist_track, clipboard_mode, help_mode
+        nonlocal edit_mode, edit_buffer, edit_curs
         nf = load_commands_newest_first(histfile_path)
         b, _ = build_processed(nf)
         base_commands.clear()
@@ -243,6 +261,9 @@ def _tui_main(
         group_scroll = 0
         clipboard_mode = False
         help_mode = False
+        edit_mode = False
+        edit_buffer = ""
+        edit_curs = 0
         pairs = _visible_pairs(base_commands, filter_text, sort_mode)
         if not pairs:
             cursor = 0
@@ -357,7 +378,7 @@ def _tui_main(
                         pass
             cm = " [COPY]" if clipboard_mode else ""
             hint = (
-                f" Enter{cm}  Space hdr  +/- expand  ←run →copy  "
+                f" Enter{cm}  Space hdr  +/- expand  ←edit →copy  "
                 ":e/:d/:b/:c/:h  :r  Esc back "
             )
         else:
@@ -382,7 +403,9 @@ def _tui_main(
                     if len(body) > w - 8:
                         body = body[: w - 9] + "…"
                     line = f"{mark}{label} {body}".ljust(w - 1)[: w - 1]
-                    if ri == cursor and clipboard_mode:
+                    if edit_mode and ri == cursor:
+                        row_attr = edit_sel_attr
+                    elif ri == cursor and clipboard_mode:
                         row_attr = clip_sel_attr
                     elif ri == cursor:
                         row_attr = sel_attr
@@ -395,7 +418,7 @@ def _tui_main(
             so = f" [{sort_mode}]" if sort_mode else ""
             cm = " [COPY]" if clipboard_mode else ""
             hint = (
-                f" ↑/↓  Enter{cm}{so}  ←run →copy  "
+                f" ↑/↓  Enter{cm}{so}  ←edit →copy  "
                 ":e/:d/:b/:c/:h  :r  Esc clear "
             )
 
@@ -452,9 +475,12 @@ def _tui_main(
             )
         else:
             print(
-                "ihg: clipboard unavailable (try pbcopy, wl-copy, xclip, or xsel)",
+                "ihg: clipboard unavailable (try pbcopy, wl-copy, xclip, or xsel); "
+                "command printed below for manual copy",
                 file=sys.stderr,
             )
+            print(expanded, file=sys.stdout)
+            sys.stdout.flush()
         return 0 if ok else 1
 
     while True:
@@ -533,15 +559,7 @@ def _tui_main(
                     status_set("groups by command step (:g)")
                     continue
                 if act == "edit":
-                    cmd = selected_command()
-                    if cmd is None:
-                        status_set("select a command line to edit")
-                        continue
-                    edit_mode = True
-                    edit_buffer = cmd
-                    edit_curs = len(edit_buffer)
-                    group_mode = False
-                    status_set("edit: Enter run or copy  Esc cancel")
+                    open_edit_from_selection()
                     continue
                 if act == "help":
                     help_mode = True
@@ -704,7 +722,7 @@ def _tui_main(
                         expanded.add(gidx)
                 continue
             if ch in (curses.KEY_LEFT,):
-                clipboard_mode = False
+                open_edit_from_selection()
                 continue
             if ch in (curses.KEY_RIGHT,):
                 clipboard_mode = True
@@ -739,7 +757,7 @@ def _tui_main(
             continue
 
         if ch in (curses.KEY_LEFT,):
-            clipboard_mode = False
+            open_edit_from_selection()
             continue
         if ch in (curses.KEY_RIGHT,):
             clipboard_mode = True
