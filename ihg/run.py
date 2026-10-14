@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from ihg.shell_aliases import expand_command_aliases, load_aliases_for_shell
+from ihg.shell_env import shell_subprocess_env
 
 _SHELL_ALIASES: Optional[Dict[str, str]] = None
 
@@ -142,8 +143,16 @@ def _ensure_term_geometry_env() -> None:
 def _run_via_pty(argv: list[str]) -> int:
     import pty
 
-    status = pty.spawn(argv)
-    return os.waitstatus_to_exitcode(status)
+    clean = shell_subprocess_env()
+    saved = dict(os.environ)
+    os.environ.clear()
+    os.environ.update(clean)
+    try:
+        status = pty.spawn(argv)
+        return os.waitstatus_to_exitcode(status)
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
 
 
 def run_selected(
@@ -182,6 +191,8 @@ def run_selected(
 
     _ensure_term_geometry_env()
 
+    child_env = shell_subprocess_env()
+
     if (
         os.environ.get("IHG_NO_PARENT_SHELL_EVAL", "").strip() not in ("1", "true", "yes")
         and _is_simple_parent_shell_command(to_run)
@@ -190,7 +201,7 @@ def run_selected(
         return 0
 
     if stdin_data is not None:
-        return subprocess.run(argv, input=stdin_data).returncode
+        return subprocess.run(argv, input=stdin_data, env=child_env).returncode
 
     stdin_tty = sys.stdin is not None and sys.stdin.isatty()
     stdout_tty = sys.stdout is not None and sys.stdout.isatty()
@@ -211,4 +222,5 @@ def run_selected(
         stdin=sys.stdin,
         stdout=sys.stdout,
         stderr=sys.stderr,
+        env=child_env,
     ).returncode

@@ -38,6 +38,11 @@ _HELP_LINES: Tuple[str, ...] = (
 )
 
 
+def _printable(s: str) -> str:
+    """Make undecodable history bytes (surrogate escapes) safe for curses output."""
+    return s.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+
+
 def _visible_pairs(
     base_commands: List[str],
     filter_text: str,
@@ -303,12 +308,12 @@ def _tui_main(
         """Rows: (display, command_to_run_or_None, section_index_for_header)."""
         rows: List[Tuple[str, Optional[str], Optional[int]]] = []
         for gi, (key, members) in enumerate(group_sections):
-            kdisp = key[:120] + ("…" if len(key) > 120 else "")
+            kdisp = _printable(key[:120]) + ("…" if len(key) > 120 else "")
             head = f"[{len(members)}] {kdisp}"
             rows.append((head, None, gi))
             if gi in expanded:
                 for m in members:
-                    disp = f"    {m[:120]}{'…' if len(m) > 120 else ''}"
+                    disp = f"    {_printable(m[:120])}{'…' if len(m) > 120 else ''}"
                     rows.append((disp, m, None))
         return rows
 
@@ -399,7 +404,7 @@ def _tui_main(
                     cmd, rec = pairs[ri]
                     label = str(rec) if rec < 10 else " "
                     mark = ">" if ri == cursor else " "
-                    body = cmd.replace("\n", " ")
+                    body = _printable(cmd).replace("\n", " ")
                     if len(body) > w - 8:
                         body = body[: w - 9] + "…"
                     line = f"{mark}{label} {body}".ljust(w - 1)[: w - 1]
@@ -425,7 +430,7 @@ def _tui_main(
         foot0 = h - 2
         foot1 = h - 1
         if edit_mode:
-            disp = edit_buffer.replace("\n", " ")
+            disp = _printable(edit_buffer).replace("\n", " ")
             prefix = "edit: "
             wlim = max(1, w - 1)
             avail = max(4, wlim - len(prefix))
@@ -479,8 +484,11 @@ def _tui_main(
                 "command printed below for manual copy",
                 file=sys.stderr,
             )
-            print(expanded, file=sys.stdout)
             sys.stdout.flush()
+            sys.stdout.buffer.write(
+                expanded.encode("utf-8", errors="surrogateescape") + b"\n"
+            )
+            sys.stdout.buffer.flush()
         return 0 if ok else 1
 
     while True:

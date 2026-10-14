@@ -17,7 +17,7 @@ def copy_text(text: str) -> bool:
     """
     if text == "":
         return True
-    data = text.encode("utf-8")
+    data = text.encode("utf-8", errors="surrogateescape")
 
     if sys.platform == "darwin":
         try:

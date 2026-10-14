@@ -15,12 +15,10 @@ def test_parse_zsh_basic():
     assert parse_zsh_history(text) == ["cd /tmp", "ls -la"]
 
 
-def test_parse_zsh_escaped_newline():
-    text = ": 1:0;echo hello\\nworld\n"
-    out = parse_zsh_history(text)
-    assert len(out) == 1
-    assert "hello" in out[0]
-    assert "world" in out[0]
+def test_parse_zsh_literal_backslash_n_is_not_a_newline():
+    # zsh stores a literal backslash-n verbatim; only backslash + real newline continues.
+    text = ": 1:0;printf 'a\\nb'\n"
+    assert parse_zsh_history(text) == ["printf 'a\\nb'"]
 
 
 def test_parse_bash_plain():
