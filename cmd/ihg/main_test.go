@@ -20,7 +20,7 @@ func TestRunVersionAndHelp(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var out, errOut bytes.Buffer
-			code := run(tt.args, &out, &errOut)
+			code := run(tt.args, func(string) string { return "" }, &out, &errOut)
 			if code != tt.wantCode {
 				t.Errorf("exit code = %d, want %d", code, tt.wantCode)
 			}
