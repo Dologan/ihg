@@ -30,6 +30,12 @@ const settle = 150 * time.Millisecond
 var ihgBin string // built once in TestMain
 
 func TestMain(m *testing.M) {
+	// IHG_E2E_BIN points at a prebuilt ihg, for running the compiled test
+	// binary on a host without Go (e.g. GOOS=linux go test -c, then scp).
+	if bin := os.Getenv("IHG_E2E_BIN"); bin != "" {
+		ihgBin = bin
+		os.Exit(m.Run())
+	}
 	dir, err := os.MkdirTemp("", "ihg-e2e-bin")
 	if err != nil {
 		panic(err)

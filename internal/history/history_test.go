@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -417,14 +418,41 @@ func zshReads(t *testing.T, zsh, home, histfile string) []string {
 	return got[:len(got)-1]
 }
 
+// zshWritesBackslashGuard reports whether zsh appends a guard space when
+// saving a command that ends in a backslash (newer zsh does; 5.5.1 does not).
+func zshWritesBackslashGuard(t *testing.T, zsh string) bool {
+	t.Helper()
+	dir := t.TempDir()
+	hist := filepath.Join(dir, "h")
+	cmd := exec.Command(zsh, "-f", "-i", "-c",
+		`HISTSIZE=10 SAVEHIST=10 HISTFILE="$1"; print -rs -- 'x\'; fc -W`, "zsh", hist)
+	cmd.Env = zshOracleEnv(dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("zsh probe: %v\n%s", err, out)
+	}
+	data, _ := os.ReadFile(hist)
+	return bytes.HasSuffix(data, []byte("\\ \n"))
+}
+
 func TestRealZshAgreesBothDirections(t *testing.T) {
 	zsh, err := exec.LookPath("zsh")
 	if err != nil {
 		t.Skip("zsh not installed")
 	}
+	cases := tricky
+	if !zshWritesBackslashGuard(t, zsh) {
+		// Older zsh (seen on 5.5.1) writes "cmd\\" with no guard space and so
+		// merges it with the next entry when reading its own file back; ihg
+		// follows the fixed format, so those cases cannot round-trip there.
+		t.Log("this zsh lacks the trailing-backslash guard; skipping those cases")
+		cases = slices.DeleteFunc(slices.Clone(tricky), func(c string) bool {
+			return strings.HasSuffix(strings.TrimRight(c, " "), `\`)
+		})
+	}
 	for _, extended := range []bool{true, false} {
 		name := map[bool]string{true: "extended", false: "plain"}[extended]
 		t.Run(name, func(t *testing.T) {
+			tricky := cases
 			dir := t.TempDir()
 			cmdsFile := filepath.Join(dir, "cmds")
 			writeFile(t, cmdsFile, strings.Join(tricky, "\x00")+"\x00")
