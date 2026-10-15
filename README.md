@@ -18,7 +18,7 @@ shell wrapper.
 
 ## Developing the Go version
 
-Requires Go 1.24 or newer.
+Requires Go 1.26 or newer.
 
 ```bash
 make            # gofmt check, go vet, go test

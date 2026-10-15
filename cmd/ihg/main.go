@@ -5,17 +5,28 @@
 package main
 
 import (
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 
+	"github.com/Dologan/ihg/internal/filters"
+	"github.com/Dologan/ihg/internal/history"
 	"github.com/Dologan/ihg/internal/result"
 	"github.com/Dologan/ihg/internal/shellinit"
+	"github.com/Dologan/ihg/internal/ui"
 )
 
 // version is overridden at build time: go build -ldflags "-X main.version=v1.2.3".
 var version = "dev"
+
+// exitCancelled is returned when the user cancels without the shell wrapper,
+// matching fzf so scripts can tell "nothing chosen" from success.
+const exitCancelled = 130
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
@@ -33,12 +44,14 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			return 0
 		case "init":
 			return runInit(args[1:], stdout, stderr)
-		case "--":
-			args = args[1:]
 		}
 	}
-	query := strings.Join(args, " ")
-	_ = query // used by the UI (Phase 3)
+
+	opts, err := parseOptions(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "ihg: %v\n%s", err, usage)
+		return 2
+	}
 
 	// Test hook: IHG_TEST_PICK="run:cmd" or "edit:cmd" answers without the UI,
 	// so the e2e tests can exercise the shell integration on its own.
@@ -47,17 +60,97 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return deliver(getenv("IHG_OUT"), result.Action(action), cmd, stdout, stderr)
 	}
 
-	fmt.Fprintln(stderr, "ihg: the Go rewrite is in progress; use legacy/ for now (see README)")
-	return 2
+	cmds, err := loadCommands(getenv)
+	if err != nil {
+		fmt.Fprintf(stderr, "ihg: %v\n", err)
+		return 2
+	}
+
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		fmt.Fprintf(stderr, "ihg: needs a terminal: %v\n", err)
+		return 2
+	}
+	defer tty.Close()
+
+	res, err := ui.Run(ui.Config{
+		Commands: cmds,
+		Query:    opts.query,
+		Height:   opts.height,
+		Layout:   opts.layout,
+	}, tty)
+	if err != nil {
+		fmt.Fprintf(stderr, "ihg: %v\n", err)
+		return 1
+	}
+	return deliver(getenv("IHG_OUT"), res.Action, res.Command, stdout, stderr)
+}
+
+type options struct {
+	query  string
+	height ui.Height
+	layout ui.Layout
+}
+
+func parseOptions(args []string) (options, error) {
+	fs := flag.NewFlagSet("ihg", flag.ContinueOnError)
+	fs.SetOutput(io.Discard) // errors are reported by the caller with usage
+	height := fs.String("height", "40%", "")
+	layout := fs.String("layout", "default", "")
+	if err := fs.Parse(args); err != nil {
+		return options{}, err
+	}
+	o := options{query: strings.Join(fs.Args(), " ")}
+	var err error
+	if o.height, err = ui.ParseHeight(*height); err != nil {
+		return options{}, fmt.Errorf("--height: %w", err)
+	}
+	switch *layout {
+	case "default":
+		o.layout = ui.LayoutDefault
+	case "reverse":
+		o.layout = ui.LayoutReverse
+	default:
+		return options{}, fmt.Errorf("--layout: want default or reverse, got %q", *layout)
+	}
+	return o, nil
+}
+
+// loadCommands reads the history file and returns its commands newest first,
+// deduplicated and without trivial one-word commands.
+func loadCommands(getenv func(string) string) ([]string, error) {
+	path := firstNonEmpty(getenv("IHG_HISTFILE"), getenv("HISTFILE"))
+	if path == "" {
+		return nil, errors.New(`no history file: set HISTFILE (the "ihg init" shell integration passes it automatically)`)
+	}
+	if rest, ok := strings.CutPrefix(path, "~/"); ok {
+		path = filepath.Join(getenv("HOME"), rest)
+	}
+	cmds, _, err := history.Load(path, firstNonEmpty(getenv("IHG_SHELL"), getenv("SHELL")))
+	if err != nil {
+		return nil, err
+	}
+	slices.Reverse(cmds) // Load returns oldest first
+	cmds = slices.DeleteFunc(cmds, isSelfInvocation)
+	return filters.BuildProcessed(cmds, filters.IgnoreWords(getenv("IHG_IGNORE"))), nil
+}
+
+// isSelfInvocation reports whether cmd runs ihg itself. The shell wrapper
+// flushes history before the picker opens, so the `ihg query` line just typed
+// would otherwise be the newest entry and match its own query.
+func isSelfInvocation(cmd string) bool {
+	fields := strings.Fields(cmd)
+	return len(fields) > 0 && fields[0] == "ihg"
 }
 
 // deliver hands the chosen command to the shell wrapper via the file named by
 // IHG_OUT, or prints it to stdout when ihg runs without the wrapper.
 func deliver(outPath string, action result.Action, cmd string, stdout, stderr io.Writer) int {
 	if outPath == "" {
-		if action != result.None {
-			fmt.Fprintln(stdout, cmd)
+		if action == result.None {
+			return exitCancelled
 		}
+		fmt.Fprintln(stdout, cmd)
 		return 0
 	}
 	if err := result.Write(outPath, action, cmd); err != nil {
@@ -81,10 +174,20 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const usage = `usage: ihg [--] [query]
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+const usage = `usage: ihg [--height N|N%] [--layout default|reverse] [--] [query]
        ihg init zsh|bash
 
 Interactive, deduplicated shell history. Set up the shell integration with
   eval "$(ihg init zsh)"     # or bash
-See README for keys and options.
+Enter runs the selected command in your shell, Tab puts it on the command
+line for editing, Esc cancels. See README for more.
 `
