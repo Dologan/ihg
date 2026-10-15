@@ -3,6 +3,7 @@ package e2e
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -103,8 +104,17 @@ func TestPickerFullScreenMouse(t *testing.T) {
 	s.expect("1/")
 	// The pty is 40 rows: 38 list rows, info, prompt. The best match is on the
 	// row just above the info line: row 38 (1-based). SGR press + release, twice.
-	click := "\x1b[<0;10;38M\x1b[<0;10;38m"
-	s.send(click + click)
+	press, release := "\x1b[<0;10;38M", "\x1b[<0;10;38m"
+	s.send(press + release + press) // second press: nothing may run yet
+	s.send(release)                 // arrives separately, as from a real terminal
 	s.expect("UI-42")
 	s.expect(prompt)
+	// No mouse report may leak into the shell after ihg exits.
+	s.line(`echo "LINE=[$((1+1))]"`, "LINE=[2]")
+	s.mu.Lock()
+	out := s.out.String()
+	s.mu.Unlock()
+	if strings.Contains(out[strings.LastIndex(out, "UI-42"):], "<0;") {
+		t.Errorf("mouse report leaked into the shell:\n%q", out[strings.LastIndex(out, "UI-42"):])
+	}
 }

@@ -16,7 +16,12 @@ func newMouseModel(layout Layout, height Height, w, h int) Model {
 
 func wheel(b tea.MouseButton) tea.MouseWheelMsg { return tea.MouseWheelMsg{Button: b} }
 
-func click(y int) tea.MouseClickMsg { return tea.MouseClickMsg{Y: y, Button: tea.MouseLeft} }
+func mousePress(y int) tea.MouseClickMsg { return tea.MouseClickMsg{Y: y, Button: tea.MouseLeft} }
+
+func mouseRelease(y int) tea.MouseReleaseMsg { return tea.MouseReleaseMsg{Y: y, Button: tea.MouseLeft} }
+
+// click is a full press + release.
+func click(y int) []tea.Msg { return []tea.Msg{mousePress(y), mouseRelease(y)} }
 
 func TestWheelMovesVisually(t *testing.T) {
 	tests := []struct {
@@ -42,7 +47,7 @@ func TestWheelMovesVisually(t *testing.T) {
 
 func TestMouseIgnoredUnlessEnabled(t *testing.T) {
 	m := newModel(sample, 80, 24) // Mouse: false
-	m = feed(m, wheel(tea.MouseWheelUp), click(0))
+	m = feed(m, append([]tea.Msg{wheel(tea.MouseWheelUp)}, click(0)...)...)
 	if m.cursor != 0 {
 		t.Errorf("cursor = %d, want 0 with mouse disabled", m.cursor)
 	}
@@ -71,7 +76,7 @@ func TestClickSelectsRow(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := feed(newMouseModel(tt.layout, Height{Percent: 100}, 80, 10), click(tt.y))
+			m := feed(newMouseModel(tt.layout, Height{Percent: 100}, 80, 10), click(tt.y)...)
 			if m.cursor != tt.want {
 				t.Errorf("cursor = %d, want %d", m.cursor, tt.want)
 			}
@@ -83,7 +88,7 @@ func TestClickSelectsRow(t *testing.T) {
 }
 
 func TestClickIgnoredInline(t *testing.T) {
-	m := feed(newMouseModel(LayoutDefault, Height{Percent: 40}, 80, 24), click(5))
+	m := feed(newMouseModel(LayoutDefault, Height{Percent: 40}, 80, 24), click(5)...)
 	if m.cursor != 0 {
 		t.Errorf("cursor = %d, want 0: inline mode cannot map mouse rows", m.cursor)
 	}
@@ -94,9 +99,13 @@ func TestDoubleClickRuns(t *testing.T) {
 	m := newMouseModel(LayoutDefault, Height{Percent: 100}, 80, 10)
 	m.now = func() time.Time { return now }
 
-	m = feed(m, click(5)) // select rank 2
+	m = feed(m, click(5)...) // select rank 2
 	now = now.Add(200 * time.Millisecond)
-	m = feed(m, click(5))
+	m = feed(m, mousePress(5))
+	if m.done {
+		t.Fatal("double click ran on the press; must wait for the release")
+	}
+	m = feed(m, mouseRelease(5))
 	if got := m.Result(); got.Action != result.Run || got.Command != sample[2] {
 		t.Errorf("double click: result = %+v, want run %q", got, sample[2])
 	}
@@ -104,9 +113,9 @@ func TestDoubleClickRuns(t *testing.T) {
 	// Two clicks too far apart only select.
 	m = newMouseModel(LayoutDefault, Height{Percent: 100}, 80, 10)
 	m.now = func() time.Time { return now }
-	m = feed(m, click(5))
+	m = feed(m, click(5)...)
 	now = now.Add(time.Second)
-	m = feed(m, click(5))
+	m = feed(m, click(5)...)
 	if m.done {
 		t.Error("slow second click ran the command")
 	}
@@ -114,7 +123,7 @@ func TestDoubleClickRuns(t *testing.T) {
 	// A double click spread over two different rows only selects.
 	m = newMouseModel(LayoutDefault, Height{Percent: 100}, 80, 10)
 	m.now = func() time.Time { return now }
-	m = feed(m, click(5), click(6))
+	m = feed(m, append(click(5), click(6)...)...)
 	if m.done || m.cursor != 1 {
 		t.Errorf("clicks on two rows: done=%v cursor=%d, want not done, cursor 1", m.done, m.cursor)
 	}

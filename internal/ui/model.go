@@ -41,6 +41,7 @@ type Model struct {
 	now       func() time.Time // clock, replaceable in tests
 	lastClick time.Time        // for double-click detection
 	lastRank  int              // hit rank of the last click
+	runOnUp   bool             // second press of a double click seen; run on its release
 }
 
 // doubleClick is the longest gap between two clicks on a row that runs it.
@@ -85,6 +86,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleWheel(msg)
 	case tea.MouseClickMsg:
 		return m.handleClick(msg)
+	case tea.MouseReleaseMsg:
+		return m.handleRelease(msg)
 	}
 	return m, nil
 }
@@ -142,12 +145,26 @@ func (m Model) handleClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	}
 	now := m.now()
 	if rank == m.cursor && rank == m.lastRank && now.Sub(m.lastClick) <= doubleClick {
-		if c, ok := m.selected(); ok {
-			return m.quit(result.Run, c)
-		}
+		// Run on the matching release, not now: quitting here would leave the
+		// release event to arrive after exit and be typed into the shell.
+		m.runOnUp = true
+		return m, nil
 	}
+	m.runOnUp = false
 	m.cursor, m.lastRank, m.lastClick = rank, rank, now
 	m.clampView()
+	return m, nil
+}
+
+// handleRelease completes a double click started in handleClick.
+func (m Model) handleRelease(msg tea.MouseReleaseMsg) (tea.Model, tea.Cmd) {
+	if !m.runOnUp {
+		return m, nil
+	}
+	m.runOnUp = false
+	if c, ok := m.selected(); ok {
+		return m.quit(result.Run, c)
+	}
 	return m, nil
 }
 
