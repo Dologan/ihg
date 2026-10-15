@@ -2,6 +2,7 @@ package ui
 
 import (
 	"slices"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -36,7 +37,14 @@ type Model struct {
 	termW, termH int
 	done         bool
 	res          Result
+
+	now       func() time.Time // clock, replaceable in tests
+	lastClick time.Time        // for double-click detection
+	lastRank  int              // hit rank of the last click
 }
+
+// doubleClick is the longest gap between two clicks on a row that runs it.
+const doubleClick = 500 * time.Millisecond
 
 // New returns a model for cfg. Until a WindowSizeMsg arrives it assumes an
 // 80x24 terminal.
@@ -49,6 +57,7 @@ func New(cfg Config) Model {
 		termW:   80,
 		termH:   24,
 		res:     Result{Action: result.None},
+		now:     time.Now,
 	}
 	m.qpos = len(m.query)
 	m.refilter()
@@ -72,6 +81,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 	case tea.PasteMsg:
 		return m.handlePaste(msg)
+	case tea.MouseWheelMsg:
+		return m.handleWheel(msg)
+	case tea.MouseClickMsg:
+		return m.handleClick(msg)
 	}
 	return m, nil
 }
@@ -99,6 +112,59 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m.insert(in), nil
+}
+
+// handleWheel moves the selection one row per wheel step, in the direction
+// the list visibly scrolls.
+func (m Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	if !m.cfg.Mouse || m.mode != modeSearch {
+		return m, nil
+	}
+	switch msg.Button {
+	case tea.MouseWheelUp:
+		return m.move(m.visualStep(-1)), nil
+	case tea.MouseWheelDown:
+		return m.move(m.visualStep(+1)), nil
+	}
+	return m, nil
+}
+
+// handleClick selects the clicked row; a second click on the same row within
+// doubleClick runs it. Only in full-screen mode, where the frame starts at the
+// top of the screen so mouse rows map directly onto view lines.
+func (m Model) handleClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
+	if !m.cfg.Mouse || m.mode != modeSearch || !m.cfg.Height.full() || msg.Button != tea.MouseLeft {
+		return m, nil
+	}
+	rank, ok := m.rankAtLine(msg.Y)
+	if !ok {
+		return m, nil
+	}
+	now := m.now()
+	if rank == m.cursor && rank == m.lastRank && now.Sub(m.lastClick) <= doubleClick {
+		if c, ok := m.selected(); ok {
+			return m.quit(result.Run, c)
+		}
+	}
+	m.cursor, m.lastRank, m.lastClick = rank, rank, now
+	m.clampView()
+	return m, nil
+}
+
+// rankAtLine maps a view line to the hit rank drawn there (see viewSearch).
+func (m Model) rankAtLine(y int) (int, bool) {
+	n := m.listRows()
+	var row int
+	if m.cfg.Layout == LayoutReverse {
+		row = y - 2 // prompt and info lines come first
+	} else {
+		row = n - 1 - y // best hit is on the line just above the info line
+	}
+	if row < 0 || row >= n {
+		return 0, false
+	}
+	rank := m.offset + row
+	return rank, rank < len(m.hits)
 }
 
 func (m Model) quit(a result.Action, cmd string) (tea.Model, tea.Cmd) {

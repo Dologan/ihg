@@ -47,7 +47,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		}
 	}
 
-	opts, err := parseOptions(args)
+	// IHG_DEFAULT_OPTS holds default flags (like fzf's FZF_DEFAULT_OPTS);
+	// flags on the command line come later and so win.
+	opts, err := parseOptions(append(strings.Fields(getenv("IHG_DEFAULT_OPTS")), args...))
 	if err != nil {
 		fmt.Fprintf(stderr, "ihg: %v\n%s", err, usage)
 		return 2
@@ -78,6 +80,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		Query:    opts.query,
 		Height:   opts.height,
 		Layout:   opts.layout,
+		Mouse:    opts.mouse,
 	}, tty)
 	if err != nil {
 		fmt.Fprintf(stderr, "ihg: %v\n", err)
@@ -90,6 +93,7 @@ type options struct {
 	query  string
 	height ui.Height
 	layout ui.Layout
+	mouse  bool
 }
 
 func parseOptions(args []string) (options, error) {
@@ -97,10 +101,13 @@ func parseOptions(args []string) (options, error) {
 	fs.SetOutput(io.Discard) // errors are reported by the caller with usage
 	height := fs.String("height", "40%", "")
 	layout := fs.String("layout", "default", "")
+	var mouse bool // --mouse / --no-mouse; the last one given wins
+	fs.BoolFunc("mouse", "", func(string) error { mouse = true; return nil })
+	fs.BoolFunc("no-mouse", "", func(string) error { mouse = false; return nil })
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
-	o := options{query: strings.Join(fs.Args(), " ")}
+	o := options{query: strings.Join(fs.Args(), " "), mouse: mouse}
 	var err error
 	if o.height, err = ui.ParseHeight(*height); err != nil {
 		return options{}, fmt.Errorf("--height: %w", err)
@@ -183,8 +190,15 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-const usage = `usage: ihg [--height N|N%] [--layout default|reverse] [--] [query]
+const usage = `usage: ihg [--height N|N%] [--layout default|reverse] [--[no-]mouse] [--] [query]
        ihg init zsh|bash
+
+  --height N|N%   lines to use (default 40%); 100% is full screen
+  --layout L      default (prompt at bottom) or reverse (prompt on top)
+  --mouse         wheel scrolls; in full screen, click selects, double-click runs
+
+Defaults can be set in IHG_DEFAULT_OPTS, e.g.
+  export IHG_DEFAULT_OPTS="--height 100% --mouse"
 
 Interactive, deduplicated shell history. Set up the shell integration with
   eval "$(ihg init zsh)"     # or bash

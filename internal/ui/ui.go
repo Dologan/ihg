@@ -73,6 +73,10 @@ type Config struct {
 	Query    string   // initial query
 	Height   Height   // how much of the terminal to use
 	Layout   Layout
+	// Mouse enables wheel scrolling, plus click-to-select and double-click to
+	// run in full-screen mode. It captures the mouse, so the terminal's own
+	// selection needs a modifier (usually Shift or Option) while ihg is open.
+	Mouse bool
 }
 
 // Result is what the user chose. Action is result.None when cancelled.

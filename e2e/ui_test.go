@@ -88,3 +88,23 @@ func TestPickerWidget(t *testing.T) {
 		})
 	}
 }
+
+func TestPickerFullScreenMouse(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: skipped with -short")
+	}
+	sh := shells(t)[0]
+	s := startWithHistory(t, sh, "IHG_DEFAULT_OPTS=--height 100% --mouse")
+
+	s.send("ihg\r")
+	s.expect("\x1b[?1049h") // alternate screen (full screen)
+	s.expect("\x1b[?1002h") // mouse button-event reporting
+	s.send("UI")
+	s.expect("1/")
+	// The pty is 40 rows: 38 list rows, info, prompt. The best match is on the
+	// row just above the info line: row 38 (1-based). SGR press + release, twice.
+	click := "\x1b[<0;10;38M\x1b[<0;10;38m"
+	s.send(click + click)
+	s.expect("UI-42")
+	s.expect(prompt)
+}

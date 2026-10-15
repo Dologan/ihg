@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Dologan/ihg/internal/result"
+	"github.com/Dologan/ihg/internal/ui"
 )
 
 func TestRunVersionAndHelp(t *testing.T) {
@@ -93,5 +94,29 @@ func TestLoadCommandsHidesSelfInvocations(t *testing.T) {
 	want := []string{"ihgrep foo", "git status"}
 	if !slices.Equal(got, want) {
 		t.Errorf("loadCommands = %q, want %q", got, want)
+	}
+}
+
+func TestOptionsMouseAndDefaults(t *testing.T) {
+	tests := []struct {
+		args       []string
+		wantMouse  bool
+		wantHeight ui.Height
+	}{
+		{nil, false, ui.Height{Percent: 40}},
+		{[]string{"--mouse"}, true, ui.Height{Percent: 40}},
+		// IHG_DEFAULT_OPTS comes first, so command-line flags override it.
+		{[]string{"--height", "100%", "--mouse", "--no-mouse"}, false, ui.Height{Percent: 100}},
+		{[]string{"--no-mouse", "--mouse", "--height=10"}, true, ui.Height{Lines: 10}},
+	}
+	for _, tt := range tests {
+		o, err := parseOptions(tt.args)
+		if err != nil {
+			t.Fatalf("parseOptions(%q): %v", tt.args, err)
+		}
+		if o.mouse != tt.wantMouse || o.height != tt.wantHeight {
+			t.Errorf("parseOptions(%q) = mouse %v height %+v, want %v %+v",
+				tt.args, o.mouse, o.height, tt.wantMouse, tt.wantHeight)
+		}
 	}
 }

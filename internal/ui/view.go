@@ -41,6 +41,9 @@ func (m Model) View() tea.View {
 		v = m.viewSearch()
 	}
 	v.AltScreen = m.cfg.Height.full()
+	if m.cfg.Mouse {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	return v
 }
 
