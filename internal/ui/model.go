@@ -2,21 +2,49 @@ package ui
 
 import (
 	"slices"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/Dologan/ihg/internal/groups"
 	"github.com/Dologan/ihg/internal/match"
 	"github.com/Dologan/ihg/internal/result"
 )
 
-// mode is the interaction state. Only modeSearch exists for now; later phases
-// add more (each with its own key handler, see Model.handleKey).
+// mode is the interaction state; each mode has its own key handler (see
+// Model.handleKey) and view.
 type mode int
 
 const (
-	modeSearch mode = iota
+	modeSearch  mode = iota
+	modeColon        // ":" command prompt
+	modeConfirm      // delete confirmation
+	modeGroups       // step-group view
+	modeHelp         // full-frame help
 )
+
+// sortMode orders the visible list.
+type sortMode int
+
+const (
+	sortRelevance sortMode = iota
+	sortRecency
+	sortAZ
+	sortZA
+)
+
+func (s sortMode) tag() string {
+	switch s {
+	case sortRecency:
+		return "recency"
+	case sortAZ:
+		return "A-Z"
+	case sortZA:
+		return "Z-A"
+	}
+	return ""
+}
 
 // Model is the picker's Bubble Tea model.
 type Model struct {
@@ -24,6 +52,8 @@ type Model struct {
 	mode mode
 
 	cmds    []string
+	times   []int64 // parallel to cmds (may be short or nil)
+	sort    sortMode
 	matcher *match.Matcher
 	pat     *match.Pattern
 	hits    []match.Hit // best first
@@ -33,6 +63,22 @@ type Model struct {
 
 	cursor int // index into hits (0 = best)
 	offset int // first visible hit (0 = best)
+
+	colon    []rune // text after the ':' in modeColon
+	status   string // result/error of the last action, shown in the info line
+	pending  string // command awaiting delete confirmation
+	copyMode bool
+	preview  bool
+
+	// Group view. The search cursor and scroll are parked in sCursor/sOffset
+	// while it is open, so cursor/offset drive whichever list is on screen.
+	groups           []groups.Group
+	expanded         map[string]bool
+	grows            []grow
+	sCursor, sOffset int
+
+	helpOff  int  // first visible help line
+	helpFrom mode // mode to return to when help closes
 
 	termW, termH int
 	done         bool
@@ -51,14 +97,16 @@ const doubleClick = 500 * time.Millisecond
 // 80x24 terminal.
 func New(cfg Config) Model {
 	m := Model{
-		cfg:     cfg,
-		cmds:    cfg.Commands,
-		matcher: match.NewMatcher(),
-		query:   []rune(cfg.Query),
-		termW:   80,
-		termH:   24,
-		res:     Result{Action: result.None},
-		now:     time.Now,
+		cfg:      cfg,
+		cmds:     cfg.Commands,
+		times:    cfg.Times,
+		expanded: map[string]bool{},
+		matcher:  match.NewMatcher(),
+		query:    []rune(cfg.Query),
+		termW:    80,
+		termH:    24,
+		res:      Result{Action: result.None},
+		now:      time.Now,
 	}
 	m.qpos = len(m.query)
 	m.refilter()
@@ -69,7 +117,20 @@ func New(cfg Config) Model {
 func (m Model) Result() Result { return m.res }
 
 // Init implements tea.Model.
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd { return m.tick() }
+
+// reloadMsg fires once a second when Config.Reload is set.
+type reloadMsg time.Time
+
+// reloadEvery is the live-reload polling interval.
+const reloadEvery = time.Second
+
+func (m Model) tick() tea.Cmd {
+	if m.cfg.Reload == nil {
+		return nil
+	}
+	return tea.Tick(reloadEvery, func(t time.Time) tea.Msg { return reloadMsg(t) })
+}
 
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -78,6 +139,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.termW, m.termH = msg.Width, msg.Height
 		m.clampView()
 		return m, nil
+	case reloadMsg:
+		return m.reload()
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	case tea.PasteMsg:
@@ -94,7 +157,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleKey dispatches to the handler for the current mode.
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	m.status = ""
 	switch m.mode {
+	case modeColon:
+		return m.keyColon(msg)
+	case modeConfirm:
+		return m.keyConfirm(msg)
+	case modeGroups:
+		return m.keyGroups(msg)
+	case modeHelp:
+		return m.keyHelp(msg)
 	default:
 		return m.keySearch(msg)
 	}
@@ -175,7 +247,7 @@ func (m Model) rankAtLine(y int) (int, bool) {
 	if m.cfg.Layout == LayoutReverse {
 		row = y - 2 // prompt and info lines come first
 	} else {
-		row = n - 1 - y // best hit is on the line just above the info line
+		row = n - 1 - (y - m.previewH()) // best hit is just above the info line
 	}
 	if row < 0 || row >= n {
 		return 0, false
@@ -186,7 +258,7 @@ func (m Model) rankAtLine(y int) (int, bool) {
 
 func (m Model) quit(a result.Action, cmd string) (tea.Model, tea.Cmd) {
 	m.done = true
-	m.res = Result{Action: a, Command: cmd}
+	m.res = Result{Action: a, Command: cmd, Message: m.res.Message}
 	return m, tea.Quit
 }
 
@@ -205,11 +277,19 @@ func (m Model) keySearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Results.
 	case "enter":
 		if c, ok := m.selected(); ok {
-			return m.quit(result.Run, c)
+			return m.activate(c)
 		}
 		return m, nil
 	case "tab":
 		return m.edit()
+	case "f1":
+		return m.openHelp(), nil
+	case "ctrl+r":
+		return m.cycleSort(), nil
+	case "ctrl+/", "ctrl+_":
+		m.preview = !m.preview
+		m.clampView()
+		return m, nil
 	case "left":
 		if m.qpos == 0 {
 			return m.edit()
@@ -217,8 +297,13 @@ func (m Model) keySearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.qpos--
 		return m, nil
 	case "esc":
+		wasCopy := m.copyMode
+		m.copyMode = false
 		if len(m.query) > 0 {
 			return m.setQuery(nil), nil
+		}
+		if wasCopy {
+			return m, nil
 		}
 		return m.quit(result.None, "")
 	case "ctrl+c", "ctrl+g", "ctrl+q":
@@ -241,7 +326,14 @@ func (m Model) keySearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.move(m.visualStep(+m.listRows())), nil
 
 	// Query cursor.
-	case "right", "ctrl+f":
+	case "right":
+		if m.qpos >= len(m.query) {
+			m.copyMode = !m.copyMode
+			return m, nil
+		}
+		m.qpos++
+		return m, nil
+	case "ctrl+f":
 		m.qpos = min(m.qpos+1, len(m.query))
 		return m, nil
 	case "ctrl+b":
@@ -282,6 +374,17 @@ func (m Model) keySearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			in = append(in, r)
 		}
 	}
+	if len(m.query) == 0 {
+		switch string(in) {
+		case ":":
+			m.mode, m.colon = modeColon, nil
+			return m, nil
+		case "?":
+			m.preview = !m.preview
+			m.clampView()
+			return m, nil
+		}
+	}
 	return m.insert(in), nil
 }
 
@@ -303,10 +406,11 @@ func (m Model) visualStep(d int) int {
 }
 
 func (m Model) move(delta int) Model {
-	if len(m.hits) == 0 {
+	n := m.rowCount()
+	if n == 0 {
 		return m
 	}
-	m.cursor = min(max(m.cursor+delta, 0), len(m.hits)-1)
+	m.cursor = min(max(m.cursor+delta, 0), n-1)
 	m.clampView()
 	return m
 }
@@ -352,7 +456,61 @@ func (m Model) setQuery(q []rune) Model {
 func (m *Model) refilter() {
 	m.pat = match.Parse(string(m.query))
 	m.hits = m.matcher.MatchAll(m.pat, m.cmds, false)
+	m.applySort()
 	m.cursor, m.offset = 0, 0
+}
+
+// applySort reorders hits (best-first from the matcher) per m.sort. The sort
+// is stable and falls back to recency so equal keys keep a fixed order.
+func (m *Model) applySort() {
+	cmp := func(a, b match.Hit) int { return a.Index - b.Index }
+	switch m.sort {
+	case sortRelevance:
+		return
+	case sortRecency:
+	case sortAZ, sortZA:
+		sign := 1
+		if m.sort == sortZA {
+			sign = -1
+		}
+		cmp = func(a, b match.Hit) int {
+			if c := strings.Compare(strings.ToLower(m.cmds[a.Index]), strings.ToLower(m.cmds[b.Index])); c != 0 {
+				return sign * c
+			}
+			return a.Index - b.Index
+		}
+	}
+	slices.SortStableFunc(m.hits, cmp)
+}
+
+// cycleSort steps relevance -> recency -> A-Z -> relevance.
+func (m Model) cycleSort() Model {
+	switch m.sort {
+	case sortRelevance:
+		m.sort = sortRecency
+	case sortRecency:
+		m.sort = sortAZ
+	default:
+		m.sort = sortRelevance
+	}
+	m.refilter()
+	return m
+}
+
+// rowCount is the number of rows in the list on screen.
+func (m Model) rowCount() int {
+	if m.mode == modeGroups {
+		return len(m.grows)
+	}
+	return len(m.hits)
+}
+
+// timeAt returns the newest timestamp of cmds[i], 0 if unknown.
+func (m Model) timeAt(i int) int64 {
+	if i < 0 || i >= len(m.times) {
+		return 0
+	}
+	return m.times[i]
 }
 
 // frameLines is the number of lines the UI occupies.
@@ -363,8 +521,24 @@ func (m Model) frameLines() int {
 	return m.cfg.Height.resolve(m.termH)
 }
 
-// listRows is the number of list rows in the frame (frame minus info and prompt).
-func (m Model) listRows() int { return max(m.frameLines()-2, 1) }
+// listRows is the number of list rows in the frame (frame minus info, prompt
+// and the preview pane).
+func (m Model) listRows() int { return max(m.frameLines()-2-m.previewH(), 1) }
+
+// previewH is the height of the preview pane including its separator line:
+// 40% of the frame, at least 3, leaving the list at least one row. Zero when
+// the pane is off, in the group view/help, or the frame is too small.
+func (m Model) previewH() int {
+	if !m.preview || m.mode == modeGroups || m.mode == modeHelp {
+		return 0
+	}
+	h := m.frameLines()
+	p := min(max(h*2/5, 3), h-3)
+	if p < 2 {
+		return 0
+	}
+	return p
+}
 
 // clampView scrolls offset so the cursor is visible.
 func (m *Model) clampView() {

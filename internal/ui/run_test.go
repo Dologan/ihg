@@ -75,7 +75,7 @@ func runPTY(t *testing.T, cfg Config, input ...string) (Result, string) {
 
 func TestRunPTYEnter(t *testing.T) {
 	r, out := runPTY(t, Config{Commands: sample, Height: Height{Percent: 40}}, "mak", "\r")
-	if r != (Result{result.Run, "make test"}) {
+	if r != (Result{Action: result.Run, Command: "make test"}) {
 		t.Errorf("result = %+v", r)
 	}
 	last := bytes.LastIndex([]byte(out), []byte("make test"))
@@ -107,7 +107,7 @@ func TestRunPTYAltBIsNotEsc(t *testing.T) {
 
 func TestRunPTYTabEdits(t *testing.T) {
 	r, _ := runPTY(t, Config{Commands: sample}, "\t")
-	if r != (Result{result.Edit, "git status"}) {
+	if r != (Result{Action: result.Edit, Command: "git status"}) {
 		t.Errorf("result = %+v", r)
 	}
 }

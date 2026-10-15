@@ -74,6 +74,7 @@ func startShell(t *testing.T, argv []string, extraEnv ...string) *session {
 		"TERM=xterm",
 		"PS1=" + prompt,
 		"TMPDIR=" + home,
+		"IHG_TEST_NO_CLIPBOARD_TOOLS=1", // never overwrite the real clipboard
 	}, extraEnv...)
 	f, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 40, Cols: 200})
 	if err != nil {

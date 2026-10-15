@@ -4,6 +4,7 @@ package clipboard
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -60,6 +61,10 @@ func DefaultEnv() Env {
 	}
 }
 
+// ErrNoTool means no clipboard tool is available here (normal over SSH, where
+// OSC 52 is the only way to reach the local clipboard).
+var ErrNoTool = errors.New("no clipboard tool found")
+
 // toolTimeout bounds each clipboard tool run.
 const toolTimeout = 5 * time.Second
 
@@ -104,7 +109,7 @@ func CopyWithTools(ctx context.Context, text string, env Env) (string, error) {
 		}
 	}
 	if len(tried) == 0 {
-		return "", fmt.Errorf("no clipboard tool found")
+		return "", ErrNoTool
 	}
 	return "", fmt.Errorf("clipboard tools failed: %s", strings.Join(tried, ", "))
 }

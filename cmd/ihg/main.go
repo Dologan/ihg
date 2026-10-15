@@ -11,11 +11,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/Dologan/ihg/internal/filters"
-	"github.com/Dologan/ihg/internal/history"
 	"github.com/Dologan/ihg/internal/result"
 	"github.com/Dologan/ihg/internal/shellinit"
 	"github.com/Dologan/ihg/internal/ui"
@@ -62,7 +60,12 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return deliver(getenv("IHG_OUT"), result.Action(action), cmd, stdout, stderr)
 	}
 
-	cmds, err := loadCommands(getenv)
+	src, err := newSource(getenv)
+	if err != nil {
+		fmt.Fprintf(stderr, "ihg: %v\n", err)
+		return 2
+	}
+	cmds, times, err := src.load()
 	if err != nil {
 		fmt.Fprintf(stderr, "ihg: %v\n", err)
 		return 2
@@ -75,16 +78,30 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	}
 	defer tty.Close()
 
+	copyFn := copyWithTools
+	if getenv("IHG_TEST_NO_CLIPBOARD_TOOLS") != "" {
+		copyFn = nil // e2e tests: OSC 52 only, never touch the real clipboard
+	}
+
 	res, err := ui.Run(ui.Config{
 		Commands: cmds,
+		Times:    times,
 		Query:    opts.query,
 		Height:   opts.height,
 		Layout:   opts.layout,
 		Mouse:    opts.mouse,
+		Delete:   src.delete,
+		Backup:   src.backup,
+		Reload:   src.reload,
+		Copy:     copyFn,
+		InTmux:   getenv("TMUX") != "",
 	}, tty)
 	if err != nil {
 		fmt.Fprintf(stderr, "ihg: %v\n", err)
 		return 1
+	}
+	if res.Message != "" {
+		fmt.Fprintln(stderr, res.Message)
 	}
 	return deliver(getenv("IHG_OUT"), res.Action, res.Command, stdout, stderr)
 }
@@ -123,9 +140,8 @@ func parseOptions(args []string) (options, error) {
 	return o, nil
 }
 
-// loadCommands reads the history file and returns its commands newest first,
-// deduplicated and without trivial one-word commands.
-func loadCommands(getenv func(string) string) ([]string, error) {
+// newSource finds the history file from the environment.
+func newSource(getenv func(string) string) (*source, error) {
 	path := firstNonEmpty(getenv("IHG_HISTFILE"), getenv("HISTFILE"))
 	if path == "" {
 		return nil, errors.New(`no history file: set HISTFILE (the "ihg init" shell integration passes it automatically)`)
@@ -133,13 +149,11 @@ func loadCommands(getenv func(string) string) ([]string, error) {
 	if rest, ok := strings.CutPrefix(path, "~/"); ok {
 		path = filepath.Join(getenv("HOME"), rest)
 	}
-	cmds, _, err := history.Load(path, firstNonEmpty(getenv("IHG_SHELL"), getenv("SHELL")))
-	if err != nil {
-		return nil, err
-	}
-	slices.Reverse(cmds) // Load returns oldest first
-	cmds = slices.DeleteFunc(cmds, isSelfInvocation)
-	return filters.BuildProcessed(cmds, filters.IgnoreWords(getenv("IHG_IGNORE"))), nil
+	return &source{
+		path:   path,
+		shell:  firstNonEmpty(getenv("IHG_SHELL"), getenv("SHELL")),
+		ignore: filters.IgnoreWords(getenv("IHG_IGNORE")),
+	}, nil
 }
 
 // isSelfInvocation reports whether cmd runs ihg itself. The shell wrapper

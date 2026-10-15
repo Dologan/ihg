@@ -51,6 +51,8 @@ func press(keystroke string) tea.KeyPressMsg {
 		k.Code = tea.KeyHome
 	case "end":
 		k.Code = tea.KeyEnd
+	case "f1":
+		k.Code = tea.KeyF1
 	case "pgup":
 		k.Code = tea.KeyPgUp
 	case "pgdown":
@@ -234,23 +236,23 @@ func TestResults(t *testing.T) {
 		want    Result
 		wantEnd bool
 	}{
-		{"enter runs top", "", []string{"enter"}, Result{result.Run, "git status"}, true},
-		{"enter after move", "", []string{"up", "enter"}, Result{result.Run, "git commit -m x"}, true},
-		{"enter after filter", "make", []string{"enter"}, Result{result.Run, "make test"}, true},
-		{"tab edits", "", []string{"tab"}, Result{result.Edit, "git status"}, true},
-		{"left at 0 edits", "", []string{"left"}, Result{result.Edit, "git status"}, true},
-		{"left at 0 after home", "ls", []string{"home", "left"}, Result{result.Edit, "ls -la"}, true},
-		{"left mid-query moves", "ls", []string{"left"}, Result{result.None, ""}, false},
-		{"esc clears query", "ls", []string{"esc"}, Result{result.None, ""}, false},
-		{"esc on empty cancels", "", []string{"esc"}, Result{result.None, ""}, true},
-		{"ctrl-c", "ls", []string{"ctrl+c"}, Result{result.None, ""}, true},
-		{"ctrl-g", "ls", []string{"ctrl+g"}, Result{result.None, ""}, true},
-		{"ctrl-q", "ls", []string{"ctrl+q"}, Result{result.None, ""}, true},
-		{"ctrl-d empty cancels", "", []string{"ctrl+d"}, Result{result.None, ""}, true},
-		{"ctrl-d nonempty doesn't", "ls", []string{"ctrl+d"}, Result{result.None, ""}, false},
-		{"no match enter ignored", "zzzzqqq", []string{"enter"}, Result{result.None, ""}, false},
-		{"no match tab ignored", "zzzzqqq", []string{"tab"}, Result{result.None, ""}, false},
-		{"no match left ignored", "zzzzqqq", []string{"home", "left"}, Result{result.None, ""}, false},
+		{"enter runs top", "", []string{"enter"}, Result{Action: result.Run, Command: "git status"}, true},
+		{"enter after move", "", []string{"up", "enter"}, Result{Action: result.Run, Command: "git commit -m x"}, true},
+		{"enter after filter", "make", []string{"enter"}, Result{Action: result.Run, Command: "make test"}, true},
+		{"tab edits", "", []string{"tab"}, Result{Action: result.Edit, Command: "git status"}, true},
+		{"left at 0 edits", "", []string{"left"}, Result{Action: result.Edit, Command: "git status"}, true},
+		{"left at 0 after home", "ls", []string{"home", "left"}, Result{Action: result.Edit, Command: "ls -la"}, true},
+		{"left mid-query moves", "ls", []string{"left"}, Result{Action: result.None, Command: ""}, false},
+		{"esc clears query", "ls", []string{"esc"}, Result{Action: result.None, Command: ""}, false},
+		{"esc on empty cancels", "", []string{"esc"}, Result{Action: result.None, Command: ""}, true},
+		{"ctrl-c", "ls", []string{"ctrl+c"}, Result{Action: result.None, Command: ""}, true},
+		{"ctrl-g", "ls", []string{"ctrl+g"}, Result{Action: result.None, Command: ""}, true},
+		{"ctrl-q", "ls", []string{"ctrl+q"}, Result{Action: result.None, Command: ""}, true},
+		{"ctrl-d empty cancels", "", []string{"ctrl+d"}, Result{Action: result.None, Command: ""}, true},
+		{"ctrl-d nonempty doesn't", "ls", []string{"ctrl+d"}, Result{Action: result.None, Command: ""}, false},
+		{"no match enter ignored", "zzzzqqq", []string{"enter"}, Result{Action: result.None, Command: ""}, false},
+		{"no match tab ignored", "zzzzqqq", []string{"tab"}, Result{Action: result.None, Command: ""}, false},
+		{"no match left ignored", "zzzzqqq", []string{"home", "left"}, Result{Action: result.None, Command: ""}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

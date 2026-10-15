@@ -77,12 +77,23 @@ type Config struct {
 	// run in full-screen mode. It captures the mouse, so the terminal's own
 	// selection needs a modifier (usually Shift or Option) while ihg is open.
 	Mouse bool
+
+	// Optional features; nil/zero means unavailable (a status message says so).
+	Times  []int64                                                        // parallel to Commands: newest unix time per command, 0 if unknown
+	Delete func(cmd string) (removed int, err error)                      // remove all entries equal to cmd from the history file
+	Backup func(dest string) (path string, err error)                     // dest "" = default location; returns the written path
+	Reload func() (cmds []string, times []int64, changed bool, err error) // polled every second; changed=false is a no-op
+	Copy   func(text string) (method string, err error)                   // clipboard tool fallback (pbcopy, xclip...), may be nil
+	InTmux bool                                                           // wrap OSC 52 for tmux passthrough
 }
 
 // Result is what the user chose. Action is result.None when cancelled.
 type Result struct {
 	Action  result.Action
 	Command string
+	// Message is a one-line note for the caller to print to stderr after the
+	// UI closes (e.g. which clipboard methods were used). May be empty.
+	Message string
 }
 
 // Run shows the picker with input and output on tty and returns the choice.

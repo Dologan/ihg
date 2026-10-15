@@ -74,8 +74,8 @@ func TestDeliverWithoutWrapper(t *testing.T) {
 	}
 }
 
-func TestLoadCommandsNeedsHistfile(t *testing.T) {
-	_, err := loadCommands(func(string) string { return "" })
+func TestNewSourceNeedsHistfile(t *testing.T) {
+	_, err := newSource(func(string) string { return "" })
 	if err == nil || !strings.Contains(err.Error(), "HISTFILE") {
 		t.Errorf("err = %v, want a HISTFILE hint", err)
 	}
@@ -87,7 +87,11 @@ func TestLoadCommandsHidesSelfInvocations(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := map[string]string{"IHG_HISTFILE": hist, "IHG_SHELL": "bash"}
-	got, err := loadCommands(func(k string) string { return env[k] })
+	src, err := newSource(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := src.load()
 	if err != nil {
 		t.Fatal(err)
 	}
