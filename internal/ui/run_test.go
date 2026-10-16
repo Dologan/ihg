@@ -106,7 +106,7 @@ func TestRunPTYAltBIsNotEsc(t *testing.T) {
 }
 
 func TestRunPTYTabEdits(t *testing.T) {
-	r, _ := runPTY(t, Config{Commands: sample}, "\t")
+	r, _ := runPTY(t, Config{Commands: sample, EditShell: true}, "\t")
 	if r != (Result{Action: result.Edit, Command: "git status"}) {
 		t.Errorf("result = %+v", r)
 	}

@@ -11,6 +11,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/Dologan/ihg/internal/match"
 	"github.com/Dologan/ihg/internal/result"
 )
 
@@ -77,6 +78,12 @@ type Config struct {
 	// run in full-screen mode. It captures the mouse, so the terminal's own
 	// selection needs a modifier (usually Shift or Option) while ihg is open.
 	Mouse bool
+	// Match is the initial matching mode (exact substring by default); :f and
+	// :p switch it while the picker is open.
+	Match match.Mode
+	// EditShell makes Tab/Left/:e hand the command to the shell's command line
+	// (Action Edit) instead of editing it inside the picker.
+	EditShell bool
 
 	// Optional features; nil/zero means unavailable (a status message says so).
 	Times  []int64                                                        // parallel to Commands: newest unix time per command, 0 if unknown

@@ -30,6 +30,14 @@ Options (defaults can go in `IHG_DEFAULT_OPTS`; command-line flags win):
 | `--height N` / `--height N%` | Lines to use, inline below the prompt (default `40%`). `100%` is full screen. |
 | `--layout default\|reverse` | Prompt at the bottom with the best match above it (default), or prompt on top. |
 | `--mouse` / `--no-mouse` | Wheel moves the selection; in full screen, click selects and double-click runs. While ihg is open, select text with Shift (or Option on macOS) held. |
+| `--match exact\|fuzzy\|regex` | How the filter text matches (default `exact`: plain words are substrings; `'word` is fuzzy). `fuzzy` makes plain words fuzzy (`'word` is exact); `regex` treats the whole filter as one Go (RE2) regular expression with smart case. `^prefix`, `suffix$`, `!not` and `a \| b` work in exact and fuzzy. |
+| `--edit window\|shell` | Tab edits the command inside ihg (default), or with `shell` puts it on the shell's command line instead. |
+
+Inside the picker, type `:` on an empty filter for commands: `:f` toggles fuzzy
+matching, `:p` regex matching, `:+N` / `:-N` grow or shrink the inline height by
+N lines (default 1), `:?` or `:h` shows all keys and commands. In the group view
+(`:g`) Right toggles copy mode, and `d` / Delete removes a command or, on a
+group header, every command in the group (after a y/N prompt).
 
 For example, full screen with the mouse, like the Python version's whole-screen view:
 

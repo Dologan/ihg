@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/Dologan/ihg/internal/clipboard"
+	"github.com/Dologan/ihg/internal/match"
 	"github.com/Dologan/ihg/internal/result"
 )
 
@@ -102,7 +103,7 @@ func TestColonQuitAndEdit(t *testing.T) {
 	if !m.done || m.Result().Action != result.None {
 		t.Errorf("q: %+v", m.Result())
 	}
-	m = colon(feature(Config{}), "e")
+	m = colon(feature(Config{EditShell: true}), "e")
 	if r := m.Result(); r.Action != result.Edit || r.Command != "git status" {
 		t.Errorf("e: %+v", r)
 	}
@@ -418,7 +419,7 @@ func TestEnterRunsOutsideCopyMode(t *testing.T) {
 
 func TestGroups(t *testing.T) {
 	cmds := []string{"git status", "ls | grep x", "git log", "grep y"}
-	m := feature(Config{Commands: cmds})
+	m := feature(Config{Commands: cmds, EditShell: true})
 	m = colon(m, "g")
 	if m.mode != modeGroups {
 		t.Fatal("not in groups")
@@ -457,8 +458,8 @@ func TestGroups(t *testing.T) {
 	if len(m.grows) != 5 {
 		t.Error("enter on header should expand")
 	}
-	// move to a member (visual step: default layout, down = lower rank)
-	m = keys(m, "up")
+	// move to a member (the tree is top-down: down = next row)
+	m = keys(m, "down")
 	if r := m.grows[m.cursor]; r.header || r.cmd != "git status" {
 		t.Fatalf("cursor row = %+v", r)
 	}
@@ -467,7 +468,7 @@ func TestGroups(t *testing.T) {
 		t.Errorf("tab = %+v", e.Result())
 	}
 	// tab on header is ignored
-	if e := keys(m, "down", "tab"); e.done {
+	if e := keys(m, "up", "tab"); e.done {
 		t.Error("tab on header should do nothing")
 	}
 	// run
@@ -477,7 +478,7 @@ func TestGroups(t *testing.T) {
 	// copy mode copies the member
 	e := keys(m, "esc", "right")
 	e = colon(e, "g")
-	e = keys(e, "+", "up")
+	e = keys(e, "+", "down")
 	_, cmd := upd(e, "enter")
 	if kind, payload, _ := oscOf(flatten(cmd)); kind != "clipboard" || payload != "git status" {
 		t.Errorf("copy from groups: %q %q", kind, payload)
@@ -507,7 +508,7 @@ func TestGroupsUseVisibleOrderAndQuery(t *testing.T) {
 }
 
 func TestHelp(t *testing.T) {
-	m := feed(feature(Config{}), size(80, 40))
+	m := feed(feature(Config{}), size(80, 60))
 	m = colon(m, "h")
 	if m.mode != modeHelp {
 		t.Fatal("no help")
@@ -518,7 +519,7 @@ func TestHelp(t *testing.T) {
 			t.Errorf("help missing %q", want)
 		}
 	}
-	if len(lines(m)) != 40 {
+	if len(lines(m)) != 60 {
 		t.Errorf("help frame has %d lines", len(lines(m)))
 	}
 	m = keys(m, "esc")
@@ -673,7 +674,7 @@ func TestSortCycling(t *testing.T) {
 		t.Error("should wrap to relevance")
 	}
 	// recency vs relevance differ with a query
-	m = New(Config{Commands: []string{"xxxgit", "git", "g i t"}, Query: "git"})
+	m = New(Config{Commands: []string{"xxxgit", "git", "g i t"}, Query: "git", Match: match.ModeFuzzy})
 	rel := hitTexts(m)
 	m = keys(m, "ctrl+r")
 	rec := hitTexts(m)
@@ -757,7 +758,7 @@ func TestReloadPreservesModes(t *testing.T) {
 	// groups: expansion and selected row survive
 	g := colon(m, "g")
 	g = keys(g, "+") // expand "echo"
-	g = keys(g, "up")
+	g = keys(g, "down")
 	if r := g.grows[g.cursor]; r.header {
 		t.Fatalf("setup: %+v", r)
 	}

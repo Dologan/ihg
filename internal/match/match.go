@@ -5,17 +5,20 @@
 // MIT License. The query parser in this package is an independent
 // implementation of fzf's documented semantics.
 //
-// Syntax (terms are separated by spaces; "\ " is a literal space):
+// Matching modes (see Mode). Syntax in ModeExact (the default) and ModeFuzzy;
+// terms are separated by spaces and "\ " is a literal space:
 //
-//	foo     fuzzy match
-//	'foo    exact substring
+//	foo     exact substring (ModeExact) or fuzzy match (ModeFuzzy)
+//	'foo    the other one: fuzzy in ModeExact, exact in ModeFuzzy
 //	^foo    exact prefix
 //	foo$    exact suffix
 //	^foo$   whole line equals foo
 //	!foo    line must NOT contain foo (also !^foo and !foo$ for prefix/suffix)
 //	a | b   OR group: terms joined by a lone "|" match if any alternative does
 //
-// Terms are ANDed. A lone ', ^, ! or $ is a literal fuzzy term. Matching is
+// Terms are ANDed. A lone ', ^, ! or $ is a literal term (plain kind of the
+// mode). In ModeRegex the whole query is one Go (RE2) regular expression: no
+// term splitting, no extended syntax, no lookaround or backreferences. Matching is
 // case-insensitive unless the whole query contains an uppercase letter (smart
 // case). Latin diacritics are normalized, so "cafe" matches "café".
 //
@@ -26,12 +29,26 @@
 package match
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/junegunn/fzf/src/algo"
 	"github.com/junegunn/fzf/src/util"
+)
+
+// Mode selects how a query is interpreted.
+type Mode int
+
+const (
+	// ModeExact treats plain terms as exact substrings (the default).
+	ModeExact Mode = iota
+	// ModeFuzzy treats plain terms as fuzzy matches.
+	ModeFuzzy
+	// ModeRegex treats the whole query as one regular expression.
+	ModeRegex
 )
 
 type termKind uint8
@@ -53,18 +70,33 @@ type term struct {
 
 // Pattern is a parsed query. It is immutable and safe for concurrent use.
 type Pattern struct {
+	mode          Mode
 	sets          [][]term // AND of OR-groups
 	caseSensitive bool
+	re            *regexp.Regexp // ModeRegex
+	err           error          // ModeRegex: compile error; nothing matches
 }
 
-// Empty reports whether the pattern matches everything.
-func (p *Pattern) Empty() bool { return len(p.sets) == 0 }
+// Empty reports whether the pattern matches everything. An invalid regular
+// expression is not empty: it matches nothing.
+func (p *Pattern) Empty() bool {
+	if p.mode == ModeRegex {
+		return p.re == nil && p.err == nil
+	}
+	return len(p.sets) == 0
+}
+
+// Err returns the compile error of an invalid ModeRegex query, else nil.
+func (p *Pattern) Err() error { return p.err }
 
 const escSpace = "\x00"
 
-// Parse parses an fzf extended-search query.
-func Parse(query string) *Pattern {
-	p := &Pattern{caseSensitive: strings.ToLower(query) != query}
+// Parse parses a query in the given mode.
+func Parse(query string, mode Mode) *Pattern {
+	if mode == ModeRegex {
+		return parseRegex(query)
+	}
+	p := &Pattern{mode: mode, caseSensitive: strings.ToLower(query) != query}
 	query = strings.ReplaceAll(query, `\ `, escSpace)
 	var set []term
 	afterBar, open := false, false // open: next term joins current set
@@ -97,11 +129,47 @@ func Parse(query string) *Pattern {
 	return p
 }
 
+// parseRegex compiles the query with smart case: case-insensitive unless it
+// has an uppercase letter that is not part of an escape (\S, \D, ...).
+func parseRegex(query string) *Pattern {
+	p := &Pattern{mode: ModeRegex}
+	if query == "" {
+		return p
+	}
+	upper, esc := false, false
+	for _, r := range query {
+		switch {
+		case esc:
+			esc = false
+		case r == '\\':
+			esc = true
+		case unicode.IsUpper(r):
+			upper = true
+		}
+	}
+	p.caseSensitive = upper
+	expr := query
+	if !upper {
+		expr = "(?i)" + expr
+	}
+	p.re, p.err = regexp.Compile(expr)
+	return p
+}
+
+// plainKind is the kind of a term without a prefix or suffix operator.
+func (p *Pattern) plainKind() termKind {
+	if p.mode == ModeFuzzy {
+		return kindFuzzy
+	}
+	return kindExact
+}
+
 func (p *Pattern) parseTerm(text string) (term, bool) {
 	if !p.caseSensitive {
 		text = strings.ToLower(text)
 	}
-	t := term{kind: kindFuzzy}
+	def := p.plainKind()
+	t := term{kind: def}
 	if len(text) == 1 && strings.ContainsAny(text, "'^!$") {
 		// lone special character: literal
 	} else {
@@ -114,8 +182,12 @@ func (p *Pattern) parseTerm(text string) (term, bool) {
 			text = text[:len(text)-1]
 		}
 		if strings.HasPrefix(text, "'") {
-			if t.kind == kindFuzzy {
-				t.kind = kindExact
+			if t.kind == def && !t.inverse { // the quote inverts the default
+				if def == kindFuzzy {
+					t.kind = kindExact
+				} else {
+					t.kind = kindFuzzy
+				}
 			}
 			text = text[1:]
 		} else if strings.HasPrefix(text, "^") {
@@ -167,6 +239,9 @@ func (m *Matcher) Match(p *Pattern, text string) (score int, positions []int, ok
 }
 
 func (m *Matcher) match(p *Pattern, text string, withPos bool) (int, []int, bool) {
+	if p.mode == ModeRegex {
+		return matchRegex(p, text, withPos)
+	}
 	if len(p.sets) == 0 {
 		return 0, nil, true
 	}
@@ -211,6 +286,38 @@ func (m *Matcher) match(p *Pattern, text string, withPos bool) (int, []int, bool
 	slices.Sort(m.pos)
 	out := slices.Compact(slices.Clone(m.pos))
 	return total, out, true
+}
+
+// matchRegex matches a ModeRegex pattern. The score is always 0; positions
+// are the rune indices covered by all non-empty matches.
+func matchRegex(p *Pattern, text string, withPos bool) (int, []int, bool) {
+	switch {
+	case p.err != nil:
+		return 0, nil, false
+	case p.re == nil:
+		return 0, nil, true
+	case !withPos:
+		return 0, nil, p.re.MatchString(text)
+	}
+	locs := p.re.FindAllStringIndex(text, -1)
+	if len(locs) == 0 {
+		return 0, nil, false
+	}
+	var out []int
+	li, idx := 0, 0
+	for b := range text { // b is the byte offset of rune idx
+		for li < len(locs) && b >= locs[li][1] {
+			li++
+		}
+		if li == len(locs) {
+			break
+		}
+		if b >= locs[li][0] && locs[li][1] > locs[li][0] {
+			out = append(out, idx)
+		}
+		idx++
+	}
+	return 0, out, true
 }
 
 func (m *Matcher) run(p *Pattern, t *term, c *util.Chars, withPos bool) (algo.Result, *[]int) {

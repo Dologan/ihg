@@ -72,15 +72,17 @@ func (m Model) groupKey(r grow) string {
 	return ""
 }
 
-// keyGroups handles keys in modeGroups.
+// keyGroups handles keys in modeGroups. The tree is drawn top-down in every
+// layout, so Up/Down move to the previous/next row.
 func (m Model) keyGroups(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var row grow
 	haveRow := m.cursor >= 0 && m.cursor < len(m.grows)
 	if haveRow {
 		row = m.grows[m.cursor]
 	}
-	toggle := func(open bool) Model {
-		if haveRow && row.header {
+	setOpen := func(open bool) Model {
+		if haveRow {
+			row.header = true // a member row acts on its parent header
 			m.expanded[m.groups[row.g].Key] = open
 			m = m.rebuildGroups(row)
 		}
@@ -88,6 +90,10 @@ func (m Model) keyGroups(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.Keystroke() {
 	case "esc":
+		if m.copyMode {
+			m.copyMode = false
+			return m, nil
+		}
 		m.mode = modeSearch
 		m.cursor, m.offset = m.sCursor, m.sOffset
 		m.clampView()
@@ -97,33 +103,40 @@ func (m Model) keyGroups(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "f1":
 		return m.openHelp(), nil
 	case "up", "ctrl+p", "ctrl+k":
-		return m.move(m.visualStep(-1)), nil
+		return m.move(-1), nil
 	case "down", "ctrl+n", "ctrl+j":
-		return m.move(m.visualStep(+1)), nil
+		return m.move(+1), nil
 	case "pgup":
-		return m.move(m.visualStep(-m.listRows())), nil
+		return m.move(-m.listRows()), nil
 	case "pgdown":
-		return m.move(m.visualStep(+m.listRows())), nil
+		return m.move(+m.listRows()), nil
+	case "right":
+		m.copyMode = !m.copyMode
+		return m, nil
 	case "space", " ":
 		if haveRow && row.header {
-			return toggle(!m.expanded[m.groups[row.g].Key]), nil
+			return setOpen(!m.expanded[m.groups[row.g].Key]), nil
 		}
 	case "enter":
 		if !haveRow {
 			return m, nil
 		}
 		if row.header {
-			return toggle(!m.expanded[m.groups[row.g].Key]), nil
+			return setOpen(!m.expanded[m.groups[row.g].Key]), nil
 		}
 		return m.activate(row.cmd)
 	case "+":
-		return toggle(true), nil
-	case "-":
-		return toggle(false), nil
-	case "tab":
-		if haveRow && !row.header {
-			return m.quit(result.Edit, row.cmd)
+		if haveRow && row.header {
+			return setOpen(true), nil
 		}
+	case "-":
+		return setOpen(false), nil
+	case "tab":
+		return m.edit()
+	case "d", "delete":
+		return m.askDelete()
+	case ":":
+		m.mode, m.ret, m.colon = modeColon, modeGroups, nil
 	}
 	return m, nil
 }

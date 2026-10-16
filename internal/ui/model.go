@@ -22,6 +22,7 @@ const (
 	modeConfirm      // delete confirmation
 	modeGroups       // step-group view
 	modeHelp         // full-frame help
+	modeEdit         // in-window command editor
 )
 
 // sortMode orders the visible list.
@@ -61,12 +62,21 @@ type Model struct {
 	query []rune
 	qpos  int // cursor position in query, in runes
 
+	matchMode match.Mode
+
+	// ret is the mode (search or groups) that the colon prompt, the delete
+	// confirmation and the editor return to; see base.
+	ret mode
+	ed  lineEdit // buffer of modeEdit; independent of the history list
+
 	cursor int // index into hits (0 = best)
 	offset int // first visible hit (0 = best)
 
-	colon    []rune // text after the ':' in modeColon
-	status   string // result/error of the last action, shown in the info line
-	pending  string // command awaiting delete confirmation
+	colon    []rune   // text after the ':' in modeColon
+	status   string   // result/error of the last action, shown in the info line
+	pending  string   // command awaiting delete confirmation
+	pendList []string // commands of a group awaiting delete confirmation
+	pendKey  string   // key of that group
 	copyMode bool
 	preview  bool
 
@@ -97,16 +107,17 @@ const doubleClick = 500 * time.Millisecond
 // 80x24 terminal.
 func New(cfg Config) Model {
 	m := Model{
-		cfg:      cfg,
-		cmds:     cfg.Commands,
-		times:    cfg.Times,
-		expanded: map[string]bool{},
-		matcher:  match.NewMatcher(),
-		query:    []rune(cfg.Query),
-		termW:    80,
-		termH:    24,
-		res:      Result{Action: result.None},
-		now:      time.Now,
+		cfg:       cfg,
+		cmds:      cfg.Commands,
+		times:     cfg.Times,
+		expanded:  map[string]bool{},
+		matcher:   match.NewMatcher(),
+		matchMode: cfg.Match,
+		query:     []rune(cfg.Query),
+		termW:     80,
+		termH:     24,
+		res:       Result{Action: result.None},
+		now:       time.Now,
 	}
 	m.qpos = len(m.query)
 	m.refilter()
@@ -167,39 +178,34 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.keyGroups(msg)
 	case modeHelp:
 		return m.keyHelp(msg)
+	case modeEdit:
+		return m.keyEdit(msg)
 	default:
 		return m.keySearch(msg)
 	}
 }
 
 func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
-	if m.mode != modeSearch {
-		return m, nil
+	switch m.mode {
+	case modeSearch:
+		return m.setQline(m.qline().insert(pasteRunes(msg.Content))), nil
+	case modeEdit:
+		m.ed = m.ed.insert(pasteRunes(msg.Content))
 	}
-	var in []rune
-	for _, r := range msg.Content {
-		switch {
-		case r == '\n' || r == '\r' || r == '\t':
-			in = append(in, ' ')
-		case r < 0x20 || r == 0x7f:
-		default:
-			in = append(in, r)
-		}
-	}
-	return m.insert(in), nil
+	return m, nil
 }
 
 // handleWheel moves the selection one row per wheel step, in the direction
 // the list visibly scrolls.
 func (m Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
-	if !m.cfg.Mouse || m.mode != modeSearch {
+	if !m.cfg.Mouse || (m.mode != modeSearch && m.mode != modeGroups) {
 		return m, nil
 	}
 	switch msg.Button {
 	case tea.MouseWheelUp:
-		return m.move(m.visualStep(-1)), nil
+		return m.move(m.listStep(-1)), nil
 	case tea.MouseWheelDown:
-		return m.move(m.visualStep(+1)), nil
+		return m.move(m.listStep(+1)), nil
 	}
 	return m, nil
 }
@@ -272,8 +278,8 @@ func (m Model) selected() (string, bool) {
 
 // keySearch handles keys in modeSearch.
 func (m Model) keySearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	k := msg.Key()
-	switch msg.Keystroke() {
+	ks := msg.Keystroke()
+	switch ks {
 	// Results.
 	case "enter":
 		if c, ok := m.selected(); ok {
@@ -294,8 +300,6 @@ func (m Model) keySearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.qpos == 0 {
 			return m.edit()
 		}
-		m.qpos--
-		return m, nil
 	case "esc":
 		wasCopy := m.copyMode
 		m.copyMode = false
@@ -312,7 +316,7 @@ func (m Model) keySearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if len(m.query) == 0 {
 			return m.quit(result.None, "")
 		}
-		return m.deleteRange(m.qpos, m.qpos+1), nil
+		return m.setQline(m.qline().deleteRange(m.qpos, m.qpos+1)), nil
 
 	// Movement of the list cursor. "Up"/"down" are visual, so they depend on
 	// the layout.
@@ -325,59 +329,28 @@ func (m Model) keySearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "pgdown":
 		return m.move(m.visualStep(+m.listRows())), nil
 
-	// Query cursor.
 	case "right":
 		if m.qpos >= len(m.query) {
 			m.copyMode = !m.copyMode
 			return m, nil
 		}
-		m.qpos++
-		return m, nil
-	case "ctrl+f":
-		m.qpos = min(m.qpos+1, len(m.query))
-		return m, nil
-	case "ctrl+b":
-		m.qpos = max(m.qpos-1, 0)
-		return m, nil
-	case "alt+b", "alt+left":
-		m.qpos = wordBack(m.query, m.qpos)
-		return m, nil
-	case "alt+f", "alt+right":
-		m.qpos = wordForward(m.query, m.qpos)
-		return m, nil
-	case "ctrl+a", "home":
-		m.qpos = 0
-		return m, nil
-	case "ctrl+e", "end":
-		m.qpos = len(m.query)
-		return m, nil
+	}
 
-	// Query editing.
-	case "backspace", "ctrl+h":
-		return m.deleteRange(m.qpos-1, m.qpos), nil
-	case "delete":
-		return m.deleteRange(m.qpos, m.qpos+1), nil
-	case "ctrl+u":
-		return m.deleteRange(0, m.qpos), nil
-	case "ctrl+w", "alt+backspace", "ctrl+alt+h":
-		return m.deleteRange(wordBack(m.query, m.qpos), m.qpos), nil
+	// Filter-text cursor and editing keys.
+	if e, ok := m.qline().handleKey(ks); ok {
+		return m.setQline(e), nil
 	}
 
 	// Anything with ctrl/alt that is not bound above is ignored; otherwise
 	// printable text is inserted.
-	if k.Mod&(tea.ModCtrl|tea.ModAlt|tea.ModMeta|tea.ModSuper|tea.ModHyper) != 0 || k.Text == "" {
+	in := keyRunes(msg)
+	if len(in) == 0 {
 		return m, nil
-	}
-	var in []rune
-	for _, r := range k.Text {
-		if r >= 0x20 && r != 0x7f {
-			in = append(in, r)
-		}
 	}
 	if len(m.query) == 0 {
 		switch string(in) {
 		case ":":
-			m.mode, m.colon = modeColon, nil
+			m.mode, m.ret, m.colon = modeColon, modeSearch, nil
 			return m, nil
 		case "?":
 			m.preview = !m.preview
@@ -385,14 +358,92 @@ func (m Model) keySearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	return m.insert(in), nil
+	return m.setQline(m.qline().insert(in)), nil
 }
 
+// edit edits the command under the cursor (or the selected group member).
 func (m Model) edit() (tea.Model, tea.Cmd) {
-	if c, ok := m.selected(); ok {
-		return m.quit(result.Edit, c)
+	c, ok := m.target()
+	if !ok {
+		if m.base() == modeGroups {
+			m.status = "select a command"
+		}
+		return m, nil
 	}
+	return m.startEdit(c)
+}
+
+// startEdit opens the in-window editor on cmd, or hands cmd to the shell's
+// command line when Config.EditShell is set.
+func (m Model) startEdit(cmd string) (tea.Model, tea.Cmd) {
+	if m.cfg.EditShell {
+		return m.quit(result.Edit, cmd)
+	}
+	m.ret, m.mode = m.mode, modeEdit
+	m.ed = newLineEdit(cmd)
 	return m, nil
+}
+
+// keyEdit handles keys in modeEdit.
+func (m Model) keyEdit(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	ks := msg.Keystroke()
+	switch ks {
+	case "enter":
+		text := m.ed.String()
+		if strings.TrimSpace(text) == "" {
+			m.status = "empty command"
+			return m, nil
+		}
+		return m.activate(text)
+	case "esc":
+		m.mode = m.ret
+		return m, nil
+	case "ctrl+c", "ctrl+g", "ctrl+q":
+		return m.quit(result.None, "")
+	case "ctrl+k":
+		m.ed = m.ed.deleteRange(m.ed.pos, len(m.ed.buf))
+		return m, nil
+	}
+	if e, ok := m.ed.handleKey(ks); ok {
+		m.ed = e
+		return m, nil
+	}
+	m.ed = m.ed.insert(keyRunes(msg))
+	return m, nil
+}
+
+// base is the mode whose list is on screen: the colon prompt, delete
+// confirmation and editor draw over search or the group view.
+func (m Model) base() mode {
+	switch m.mode {
+	case modeColon, modeConfirm, modeEdit:
+		return m.ret
+	}
+	return m.mode
+}
+
+// target is the command the colon commands and Tab act on: the hit under the
+// cursor, or in the group view the selected member (not a header).
+func (m Model) target() (string, bool) {
+	if m.base() == modeGroups {
+		if m.cursor >= 0 && m.cursor < len(m.grows) && !m.grows[m.cursor].header {
+			return m.grows[m.cursor].cmd, true
+		}
+		return "", false
+	}
+	return m.selected()
+}
+
+// qline is the filter text as a lineEdit.
+func (m Model) qline() lineEdit { return lineEdit{buf: m.query, pos: m.qpos} }
+
+// setQline stores an edited filter text, refiltering when its text changed.
+func (m Model) setQline(e lineEdit) Model {
+	if !slices.Equal(e.buf, m.query) {
+		m = m.setQuery(e.buf)
+	}
+	m.qpos = e.pos
+	return m
 }
 
 // visualStep converts a visual delta (negative = up the screen) into a change
@@ -405,6 +456,15 @@ func (m Model) visualStep(d int) int {
 	return -d
 }
 
+// listStep is visualStep for the search list; the group view is a plain
+// top-down tree in every layout.
+func (m Model) listStep(d int) int {
+	if m.mode == modeGroups {
+		return d
+	}
+	return m.visualStep(d)
+}
+
 func (m Model) move(delta int) Model {
 	n := m.rowCount()
 	if n == 0 {
@@ -412,33 +472,6 @@ func (m Model) move(delta int) Model {
 	}
 	m.cursor = min(max(m.cursor+delta, 0), n-1)
 	m.clampView()
-	return m
-}
-
-// insert inserts rs at the query cursor.
-func (m Model) insert(rs []rune) Model {
-	if len(rs) == 0 {
-		return m
-	}
-	q := make([]rune, 0, len(m.query)+len(rs))
-	q = append(q, m.query[:m.qpos]...)
-	q = append(q, rs...)
-	q = append(q, m.query[m.qpos:]...)
-	pos := m.qpos + len(rs)
-	m = m.setQuery(q)
-	m.qpos = pos
-	return m
-}
-
-// deleteRange removes query[from:to] (clamped) and puts the cursor at from.
-func (m Model) deleteRange(from, to int) Model {
-	from, to = max(from, 0), min(to, len(m.query))
-	if from >= to {
-		return m
-	}
-	q := slices.Concat(m.query[:from], m.query[to:])
-	m = m.setQuery(q)
-	m.qpos = from
 	return m
 }
 
@@ -454,7 +487,7 @@ func (m Model) setQuery(q []rune) Model {
 // top hit. It mutates m's matcher state but only replaces slices, so copies of
 // the model made earlier stay valid.
 func (m *Model) refilter() {
-	m.pat = match.Parse(string(m.query))
+	m.pat = match.Parse(string(m.query), m.matchMode)
 	m.hits = m.matcher.MatchAll(m.pat, m.cmds, false)
 	m.applySort()
 	m.cursor, m.offset = 0, 0
@@ -499,7 +532,7 @@ func (m Model) cycleSort() Model {
 
 // rowCount is the number of rows in the list on screen.
 func (m Model) rowCount() int {
-	if m.mode == modeGroups {
+	if m.base() == modeGroups {
 		return len(m.grows)
 	}
 	return len(m.hits)
@@ -529,7 +562,7 @@ func (m Model) listRows() int { return max(m.frameLines()-2-m.previewH(), 1) }
 // 40% of the frame, at least 3, leaving the list at least one row. Zero when
 // the pane is off, in the group view/help, or the frame is too small.
 func (m Model) previewH() int {
-	if !m.preview || m.mode == modeGroups || m.mode == modeHelp {
+	if !m.preview || m.base() == modeGroups || m.mode == modeHelp {
 		return 0
 	}
 	h := m.frameLines()
@@ -550,28 +583,4 @@ func (m *Model) clampView() {
 		m.offset = m.cursor - n + 1
 	}
 	m.offset = max(m.offset, 0)
-}
-
-func isSpace(r rune) bool { return r == ' ' || r == '\t' }
-
-// wordBack returns the start of the word before pos (skipping spaces first).
-func wordBack(q []rune, pos int) int {
-	for pos > 0 && isSpace(q[pos-1]) {
-		pos--
-	}
-	for pos > 0 && !isSpace(q[pos-1]) {
-		pos--
-	}
-	return pos
-}
-
-// wordForward returns the end of the word after pos (skipping spaces first).
-func wordForward(q []rune, pos int) int {
-	for pos < len(q) && isSpace(q[pos]) {
-		pos++
-	}
-	for pos < len(q) && !isSpace(q[pos]) {
-		pos++
-	}
-	return pos
 }

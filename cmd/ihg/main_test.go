@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Dologan/ihg/internal/match"
 	"github.com/Dologan/ihg/internal/result"
 	"github.com/Dologan/ihg/internal/ui"
 )
@@ -50,6 +51,8 @@ func TestParseOptions(t *testing.T) {
 		{[]string{"--layout=sideways"}, "", true},
 		{[]string{"--height=abc"}, "", true},
 		{[]string{"--bogus"}, "", true},
+		{[]string{"--match=glob"}, "", true},
+		{[]string{"--edit=vim"}, "", true},
 	}
 	for _, tt := range tests {
 		o, err := parseOptions(tt.args)
@@ -122,5 +125,40 @@ func TestOptionsMouseAndDefaults(t *testing.T) {
 			t.Errorf("parseOptions(%q) = mouse %v height %+v, want %v %+v",
 				tt.args, o.mouse, o.height, tt.wantMouse, tt.wantHeight)
 		}
+	}
+}
+
+func TestOptionsMatchAndEdit(t *testing.T) {
+	tests := []struct {
+		args      []string
+		wantMatch match.Mode
+		wantShell bool
+	}{
+		{nil, match.ModeExact, false},
+		{[]string{"--match", "fuzzy"}, match.ModeFuzzy, false},
+		{[]string{"--match=regex", "--edit=shell"}, match.ModeRegex, true},
+		{[]string{"--edit", "shell", "--edit", "window"}, match.ModeExact, false},
+		// IHG_DEFAULT_OPTS comes first, so the command line wins.
+		{[]string{"--match", "regex", "--match", "exact"}, match.ModeExact, false},
+	}
+	for _, tt := range tests {
+		o, err := parseOptions(tt.args)
+		if err != nil {
+			t.Fatalf("parseOptions(%q): %v", tt.args, err)
+		}
+		if o.match != tt.wantMatch || o.editShell != tt.wantShell {
+			t.Errorf("parseOptions(%q) = match %v editShell %v, want %v %v",
+				tt.args, o.match, o.editShell, tt.wantMatch, tt.wantShell)
+		}
+	}
+	var out, errOut bytes.Buffer
+	env := func(k string) string {
+		if k == "IHG_DEFAULT_OPTS" {
+			return "--match bogus"
+		}
+		return ""
+	}
+	if code := run(nil, env, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "--match") {
+		t.Errorf("bad --match via IHG_DEFAULT_OPTS: code %d, stderr %q", code, errOut.String())
 	}
 }

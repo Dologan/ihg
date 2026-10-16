@@ -9,6 +9,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/Dologan/ihg/internal/match"
 )
 
 // Styles use only basic ANSI colours so they follow the terminal theme.
@@ -27,6 +29,7 @@ var (
 
 const (
 	promptText     = "> "
+	editPromptText = "edit> "
 	copyPromptText = "[COPY]> "
 	// rowPrefix is the width of "> N " (marker, recency digit, space).
 	rowPrefix = 4
@@ -41,7 +44,7 @@ func (m Model) View() tea.View {
 		return v
 	}
 	var v tea.View
-	switch m.mode {
+	switch m.base() {
 	case modeGroups:
 		v = m.viewGroups()
 	case modeHelp:
@@ -59,11 +62,28 @@ func (m Model) View() tea.View {
 // truncate cuts s to w display columns.
 func truncate(s string, w int) string { return ansi.Truncate(s, w, "") }
 
-// infoLine is "  shown/total", the sort tag and the status message.
+// matchTag is the info-line tag of a non-default matching mode.
+func (m Model) matchTag() string {
+	switch m.matchMode {
+	case match.ModeFuzzy:
+		return "fuzzy"
+	case match.ModeRegex:
+		return "regex"
+	}
+	return ""
+}
+
+// infoLine is "  shown/total", the sort and match tags and the status message.
 func (m Model) infoLine(w int, shown, total int) string {
 	s := fmt.Sprintf("  %d/%d", shown, total)
 	if t := m.sort.tag(); t != "" {
 		s += "  [" + t + "]"
+	}
+	if t := m.matchTag(); t != "" {
+		s += "  [" + t + "]"
+	}
+	if m.pat != nil && m.pat.Err() != nil {
+		s += "  regex error"
 	}
 	if m.status != "" {
 		s += "  " + sanitizeLine(m.status)
@@ -115,20 +135,10 @@ func (m Model) viewSearch() tea.View {
 	}
 
 	info := m.infoLine(w, len(m.hits), len(m.cmds))
-	var prompt string
-	cx, showCursor := 0, true
-	switch m.mode {
-	case modeColon:
-		prompt = stylePrompt.Render(":") + string(m.colon)
-		cx = 1 + runesWidth(m.colon)
-		cx = min(cx, w-1)
-		prompt = truncate(prompt, w)
-	case modeConfirm:
-		q := fmt.Sprintf("delete %q from history? [y/N]", truncate(sanitizeLine(m.pending), max(w-30, 10)))
-		prompt = truncate(stylePrompt.Render(q), w)
-		showCursor = false
-	default:
+	prompt, cx, showCursor, ok := m.overlayPrompt(w)
+	if !ok {
 		prompt, cx = m.renderPrompt(w)
+		showCursor = true
 	}
 
 	lines := m.layout(rows, info, prompt, m.previewLines(w))
@@ -137,6 +147,33 @@ func (m Model) viewSearch() tea.View {
 		v.Cursor = tea.NewCursor(cx, m.promptRow())
 	}
 	return v
+}
+
+// overlayPrompt renders the prompt line of the colon prompt, the delete
+// confirmation and the editor, which draw over the search or group view. ok is
+// false in the other modes.
+func (m Model) overlayPrompt(w int) (prompt string, cx int, showCursor, ok bool) {
+	switch m.mode {
+	case modeColon:
+		prompt = truncate(stylePrompt.Render(":")+string(m.colon), w)
+		return prompt, min(1+runesWidth(m.colon), w-1), true, true
+	case modeConfirm:
+		var q string
+		if m.pendList != nil {
+			q = fmt.Sprintf("delete %d commands in group %q? [y/N]", len(m.pendList), truncate(sanitizeLine(m.pendKey), max(w-40, 10)))
+		} else {
+			q = fmt.Sprintf("delete %q from history? [y/N]", truncate(sanitizeLine(m.pending), max(w-30, 10)))
+		}
+		return truncate(stylePrompt.Render(q), w), 0, false, true
+	case modeEdit:
+		pt, ps := editPromptText, stylePrompt
+		if m.copyMode {
+			pt, ps = "[COPY] "+editPromptText, styleCopyPrompt
+		}
+		prompt, cx = renderLine(pt, ps, sanitize(m.ed.String()), m.ed.pos, w)
+		return prompt, cx, true, true
+	}
+	return "", 0, false, false
 }
 
 // previewLines renders the preview pane: a separator and previewH-1 text
@@ -176,31 +213,36 @@ func (m Model) previewLines(w int) []string {
 	return append(text, sep)
 }
 
-// renderPrompt returns the prompt line and the cursor column. The visible part
-// of a long query scrolls horizontally to keep the cursor in view.
+// renderPrompt returns the prompt line and the cursor column.
 func (m Model) renderPrompt(w int) (string, int) {
 	pt, ps := promptText, stylePrompt
 	if m.copyMode {
 		pt, ps = copyPromptText, styleCopyPrompt
 	}
+	return renderLine(pt, ps, m.query, m.qpos, w)
+}
+
+// renderLine draws a prompt followed by text with the cursor at rune pos. The
+// visible part of long text scrolls horizontally to keep the cursor in view.
+func renderLine(pt string, ps lipgloss.Style, text []rune, pos, w int) (string, int) {
 	pw := len(pt)
 	avail := max(w-pw-1, 1) // keep one column for the cursor at end
 	start := 0
-	for start < m.qpos && runesWidth(m.query[start:m.qpos]) > avail {
+	for start < pos && runesWidth(text[start:pos]) > avail {
 		start++
 	}
 	end := start
 	used := 0
-	for end < len(m.query) {
-		rw := runeWidth(m.query[end])
+	for end < len(text) {
+		rw := runeWidth(text[end])
 		if used+rw > avail+1 {
 			break
 		}
 		used += rw
 		end++
 	}
-	cx := pw + runesWidth(m.query[start:m.qpos])
-	return ps.Render(pt) + string(m.query[start:end]), cx
+	cx := pw + runesWidth(text[start:pos])
+	return ps.Render(pt) + string(text[start:end]), cx
 }
 
 // selStyles returns the styles of the selected row: reverse video, in a
@@ -212,23 +254,43 @@ func (m Model) selStyles() (sel, selMatch lipgloss.Style) {
 	return styleSelected, styleSelMatch
 }
 
-// viewGroups renders modeGroups.
+// viewGroups renders the group view: a top-down tree (headers alphabetical,
+// members indented below their header) in both layouts.
 func (m Model) viewGroups() tea.View {
 	n := m.listRows()
 	w := max(m.termW, 1)
-	rows := make([]string, n)
-	for i := range rows {
+	lines := make([]string, 0, m.frameLines())
+	for i := 0; i < n; i++ {
+		row := ""
 		if rank := m.offset + i; rank < len(m.grows) {
-			rows[i] = m.renderGroupRow(rank, w)
+			row = m.renderGroupRow(rank, w)
 		}
+		lines = append(lines, row)
 	}
-	info := truncate(styleInfo.Render(fmt.Sprintf("  %d groups", len(m.groups))), w)
-	pt, ps := "groups> ", stylePrompt
-	if m.copyMode {
-		pt, ps = "[COPY] groups> ", styleCopyPrompt
+	infoText := fmt.Sprintf("  %d groups", len(m.groups))
+	if m.status != "" {
+		infoText += "  " + sanitizeLine(m.status)
 	}
-	prompt := truncate(ps.Render(pt)+styleGutter.Render("Space toggle  +/- expand  Esc back"), w)
-	return tea.NewView(strings.Join(m.layout(rows, info, prompt, nil), "\n"))
+	info := truncate(styleInfo.Render(infoText), w)
+
+	prompt, cx, showCursor, ok := m.overlayPrompt(w)
+	if !ok {
+		pt, ps := "groups> ", stylePrompt
+		if m.copyMode {
+			pt, ps = "[COPY] groups> ", styleCopyPrompt
+		}
+		prompt = truncate(ps.Render(pt)+styleGutter.Render("Space toggle  +/- expand  d delete  Esc back"), w)
+	}
+	if m.cfg.Layout == LayoutReverse {
+		lines = append([]string{prompt, info}, lines...)
+	} else {
+		lines = append(lines, info, prompt)
+	}
+	v := tea.NewView(strings.Join(lines, "\n"))
+	if ok && showCursor {
+		v.Cursor = tea.NewCursor(cx, m.promptRow())
+	}
+	return v
 }
 
 func (m Model) renderGroupRow(rank, w int) string {

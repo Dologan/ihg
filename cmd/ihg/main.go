@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/Dologan/ihg/internal/filters"
+	"github.com/Dologan/ihg/internal/match"
 	"github.com/Dologan/ihg/internal/result"
 	"github.com/Dologan/ihg/internal/shellinit"
 	"github.com/Dologan/ihg/internal/ui"
@@ -84,17 +85,19 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	}
 
 	res, err := ui.Run(ui.Config{
-		Commands: cmds,
-		Times:    times,
-		Query:    opts.query,
-		Height:   opts.height,
-		Layout:   opts.layout,
-		Mouse:    opts.mouse,
-		Delete:   src.delete,
-		Backup:   src.backup,
-		Reload:   src.reload,
-		Copy:     copyFn,
-		InTmux:   getenv("TMUX") != "",
+		Commands:  cmds,
+		Times:     times,
+		Query:     opts.query,
+		Height:    opts.height,
+		Layout:    opts.layout,
+		Mouse:     opts.mouse,
+		Match:     opts.match,
+		EditShell: opts.editShell,
+		Delete:    src.delete,
+		Backup:    src.backup,
+		Reload:    src.reload,
+		Copy:      copyFn,
+		InTmux:    getenv("TMUX") != "",
 	}, tty)
 	if err != nil {
 		fmt.Fprintf(stderr, "ihg: %v\n", err)
@@ -107,10 +110,12 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 }
 
 type options struct {
-	query  string
-	height ui.Height
-	layout ui.Layout
-	mouse  bool
+	query     string
+	height    ui.Height
+	layout    ui.Layout
+	mouse     bool
+	match     match.Mode
+	editShell bool // --edit shell: Tab puts the command on the shell command line
 }
 
 func parseOptions(args []string) (options, error) {
@@ -118,6 +123,8 @@ func parseOptions(args []string) (options, error) {
 	fs.SetOutput(io.Discard) // errors are reported by the caller with usage
 	height := fs.String("height", "40%", "")
 	layout := fs.String("layout", "default", "")
+	matchFlag := fs.String("match", "exact", "")
+	edit := fs.String("edit", "window", "")
 	var mouse bool // --mouse / --no-mouse; the last one given wins
 	fs.BoolFunc("mouse", "", func(string) error { mouse = true; return nil })
 	fs.BoolFunc("no-mouse", "", func(string) error { mouse = false; return nil })
@@ -136,6 +143,23 @@ func parseOptions(args []string) (options, error) {
 		o.layout = ui.LayoutReverse
 	default:
 		return options{}, fmt.Errorf("--layout: want default or reverse, got %q", *layout)
+	}
+	switch *matchFlag {
+	case "exact":
+		o.match = match.ModeExact
+	case "fuzzy":
+		o.match = match.ModeFuzzy
+	case "regex":
+		o.match = match.ModeRegex
+	default:
+		return options{}, fmt.Errorf("--match: want exact, fuzzy or regex, got %q", *matchFlag)
+	}
+	switch *edit {
+	case "window":
+	case "shell":
+		o.editShell = true
+	default:
+		return options{}, fmt.Errorf("--edit: want window or shell, got %q", *edit)
 	}
 	return o, nil
 }
@@ -204,18 +228,21 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-const usage = `usage: ihg [--height N|N%] [--layout default|reverse] [--[no-]mouse] [--] [query]
+const usage = `usage: ihg [--height N|N%] [--layout default|reverse] [--[no-]mouse]
+           [--match exact|fuzzy|regex] [--edit window|shell] [--] [query]
        ihg init zsh|bash
 
   --height N|N%   lines to use (default 40%); 100% is full screen
   --layout L      default (prompt at bottom) or reverse (prompt on top)
   --mouse         wheel scrolls; in full screen, click selects, double-click runs
+  --match M       exact (default, substring), fuzzy, or regex (Go RE2)
+  --edit W        window (default: edit inside ihg) or shell (Tab puts the
+                  command on the shell command line)
 
 Defaults can be set in IHG_DEFAULT_OPTS, e.g.
   export IHG_DEFAULT_OPTS="--height 100% --mouse"
 
 Interactive, deduplicated shell history. Set up the shell integration with
   eval "$(ihg init zsh)"     # or bash
-Enter runs the selected command in your shell, Tab puts it on the command
-line for editing, Esc cancels. See README for more.
+Enter runs the selected command in your shell, Tab edits it first, Esc cancels. See README for more.
 `

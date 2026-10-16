@@ -256,7 +256,7 @@ func TestResults(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := New(Config{Commands: sample, Query: tt.start})
+			m := New(Config{Commands: sample, Query: tt.start, EditShell: true})
 			m = feed(m, size(80, 24))
 			var cmd tea.Cmd
 			for _, k := range tt.keys {
