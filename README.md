@@ -23,6 +23,11 @@ make build && export PATH="$PWD/bin:$PATH" && eval "$(ihg init zsh)"   # or bash
 ihg            # or: ihg git, or IHG_BIND_CTRL_R=1 before the eval for Ctrl-R
 ```
 
+The `eval` line is what makes Enter *run* the command in your shell. It only lasts
+for that shell session, so add it (and the `PATH` line, if needed) to `~/.zshrc` or
+`~/.bashrc` on every machine you use ihg on. Without it `ihg` can only print the
+chosen command, and says so; `type ihg` should answer "ihg is a function".
+
 Options (defaults can go in `IHG_DEFAULT_OPTS`; command-line flags win):
 
 | Flag | Meaning |

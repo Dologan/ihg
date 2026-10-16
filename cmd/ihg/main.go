@@ -58,7 +58,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// so the e2e tests can exercise the shell integration on its own.
 	if pick := getenv("IHG_TEST_PICK"); pick != "" {
 		action, cmd, _ := strings.Cut(pick, ":")
-		return deliver(getenv("IHG_OUT"), result.Action(action), cmd, stdout, stderr)
+		return deliver(getenv("IHG_OUT"), result.Action(action), cmd, stdout, stderr, shellName(getenv("SHELL")))
 	}
 
 	src, err := newSource(getenv)
@@ -106,7 +106,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if res.Message != "" {
 		fmt.Fprintln(stderr, res.Message)
 	}
-	return deliver(getenv("IHG_OUT"), res.Action, res.Command, stdout, stderr)
+	return deliver(getenv("IHG_OUT"), res.Action, res.Command, stdout, stderr, shellName(firstNonEmpty(getenv("IHG_SHELL"), getenv("SHELL"))))
 }
 
 type options struct {
@@ -190,12 +190,19 @@ func isSelfInvocation(cmd string) bool {
 
 // deliver hands the chosen command to the shell wrapper via the file named by
 // IHG_OUT, or prints it to stdout when ihg runs without the wrapper.
-func deliver(outPath string, action result.Action, cmd string, stdout, stderr io.Writer) int {
+func deliver(outPath string, action result.Action, cmd string, stdout, stderr io.Writer, shell string) int {
 	if outPath == "" {
 		if action == result.None {
 			return exitCancelled
 		}
 		fmt.Fprintln(stdout, cmd)
+		if isTerminal(stdout) {
+			// Printing is right for `ihg | pbcopy`, but on a terminal it almost
+			// always means the shell integration is not loaded, so nothing ran.
+			fmt.Fprintf(stderr, "ihg: the command was only printed, not run: the shell integration is not loaded in this shell.\n"+
+				"     Add this line to your shell's startup file (~/.%src) and open a new shell:\n"+
+				"       eval \"$(ihg init %s)\"\n", shell, shell)
+		}
 		return 0
 	}
 	if err := result.Write(outPath, action, cmd); err != nil {
@@ -203,6 +210,24 @@ func deliver(outPath string, action result.Action, cmd string, stdout, stderr io
 		return 1
 	}
 	return 0
+}
+
+// isTerminal reports whether w is a terminal (a character device).
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	st, err := f.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice != 0
+}
+
+// shellName returns "zsh" or "bash" from a shell path, for the setup hint.
+func shellName(path string) string {
+	if filepath.Base(path) == "zsh" {
+		return "zsh"
+	}
+	return "bash"
 }
 
 func runInit(args []string, stdout, stderr io.Writer) int {

@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/Dologan/ihg/internal/match"
+	"github.com/creack/pty"
+
 	"github.com/Dologan/ihg/internal/result"
 	"github.com/Dologan/ihg/internal/ui"
 )
@@ -68,11 +70,11 @@ func TestParseOptions(t *testing.T) {
 
 func TestDeliverWithoutWrapper(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if code := deliver("", result.Run, "git status", &out, &errOut); code != 0 || out.String() != "git status\n" {
+	if code := deliver("", result.Run, "git status", &out, &errOut, "bash"); code != 0 || out.String() != "git status\n" {
 		t.Errorf("run: code %d, stdout %q", code, out.String())
 	}
 	out.Reset()
-	if code := deliver("", result.None, "", &out, &errOut); code != exitCancelled || out.Len() != 0 {
+	if code := deliver("", result.None, "", &out, &errOut, "bash"); code != exitCancelled || out.Len() != 0 {
 		t.Errorf("cancel: code %d, stdout %q", code, out.String())
 	}
 }
@@ -160,5 +162,43 @@ func TestOptionsMatchAndEdit(t *testing.T) {
 	}
 	if code := run(nil, env, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "--match") {
 		t.Errorf("bad --match via IHG_DEFAULT_OPTS: code %d, stderr %q", code, errOut.String())
+	}
+}
+
+func TestDeliverWithoutWrapperHintsOnlyOnTerminal(t *testing.T) {
+	// Piped stdout (ihg | pbcopy): print the command, no hint.
+	var out, errOut bytes.Buffer
+	deliver("", result.Run, "git status", &out, &errOut, "zsh")
+	if errOut.Len() != 0 {
+		t.Errorf("hint printed for non-terminal stdout: %q", errOut.String())
+	}
+
+	// Terminal stdout: the command is printed AND the user is told why nothing ran.
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Skipf("no pty: %v", err)
+	}
+	defer ptmx.Close()
+	defer tty.Close()
+	errOut.Reset()
+	deliver("", result.Run, "git status", tty, &errOut, "zsh")
+	for _, want := range []string{"not run", "~/.zshrc", `eval "$(ihg init zsh)"`} {
+		if !strings.Contains(errOut.String(), want) {
+			t.Errorf("hint %q missing %q", errOut.String(), want)
+		}
+	}
+
+	// Cancelling prints nothing and needs no hint.
+	errOut.Reset()
+	if code := deliver("", result.None, "", tty, &errOut, "zsh"); code != exitCancelled || errOut.Len() != 0 {
+		t.Errorf("cancel: code %d, stderr %q", code, errOut.String())
+	}
+}
+
+func TestShellName(t *testing.T) {
+	for in, want := range map[string]string{"/bin/zsh": "zsh", "/usr/local/bin/zsh": "zsh", "/bin/bash": "bash", "": "bash", "/bin/fish": "bash"} {
+		if got := shellName(in); got != want {
+			t.Errorf("shellName(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
