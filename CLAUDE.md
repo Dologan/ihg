@@ -168,10 +168,20 @@ Deliberate differences from Python: commands run in the user's shell (no alias p
 no `ihg: running:` line), exact matching now splits on spaces into ANDed terms, and copy mode no
 longer prints the command when no clipboard works (OSC 52 success cannot be detected).
 
+Phase 6 is done: `.github/workflows/ci.yml` runs `make check` (gofmt, vet, unit and e2e tests with
+real zsh and bash) on ubuntu and macOS plus a cross-compile of all four release targets;
+`.github/workflows/release.yml` runs goreleaser (`.goreleaser.yaml`: static linux/darwin x
+amd64/arm64 tarballs with README and LICENSE, plus `checksums.txt`) when a `v*` tag is pushed.
+Cut a release with `git tag v0.1.0 && git push origin v0.1.0` (use `TZ=UTC` for annotated tags).
+Validate release changes locally with `goreleaser check` and a snapshot build; pass a config copy
+whose `dist:` points at a scratch dir, because `--clean` deletes `dist/`.
+
 Open:
-1. **Phase 6** (the GitHub remote now exists, `github.com/Dologan/ihg`): CI matrix (macOS with
-   zsh + Homebrew bash 5, Linux with bash + zsh), goreleaser (static binaries, `homebrew_casks`).
-2. Known follow-ups: deleting a whole group rewrites the history file once per command (slow on
+1. No Homebrew tap yet (goreleaser `homebrew_casks` needs a tap repo and a token); unsigned macOS
+   binaries downloaded in a browser carry the quarantine attribute (`xattr -d com.apple.quarantine`).
+2. The e2e tests depend on timing (fixed settle delay); if CI shows flakiness, raise `settle` in
+   `e2e/shell_test.go` before anything else.
+3. Known follow-ups: deleting a whole group rewrites the history file once per command (slow on
    NFS; add a batch delete); unverified in real terminals: Ctrl-/ key, mouse clicks with the
    preview open, ZWJ emoji widths.
 

@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # The e2e tests drive real shells in a pseudo-terminal. Both zsh and a
+      # modern bash must be present so every code path runs (macOS ships
+      # bash 3.2, which only gets the plain function, and zsh).
+      - name: Install shells (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh
+
+      - name: Install shells (macOS)
+        if: runner.os == 'macOS'
+        run: brew install bash
+
+      - name: Show shell versions
+        run: |
+          zsh --version
+          bash --version | head -1
+          ls /opt/homebrew/bin/bash /usr/local/bin/bash 2>/dev/null || true
+
+      - name: Format, vet, unit and e2e tests
+        run: make check
+
+      - name: Vet for the other platform
+        run: |
+          GOOS=linux GOARCH=arm64 go vet ./...
+          GOOS=darwin GOARCH=amd64 go vet ./...
+
+  build:
+    name: build (static, cross-compiled)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build every release target
+        run: |
+          for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            GOOS=${t%/*} GOARCH=${t#*/} CGO_ENABLED=0 go build -trimpath -o /dev/null ./cmd/ihg
+            echo "built $t"
+          done
