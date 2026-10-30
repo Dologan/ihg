@@ -1,13 +1,6 @@
-__pycache__/
-*.py[cod]
-*.egg-info/
-.eggs/
 dist/
-build/
-.venv/
-venv/
-.pytest_cache/
-.coverage
-htmlcov/
-.cursor/
 bin/
+.cursor/
+# Leftovers of the removed Python build; safe to delete these directories and these two lines.
+build/
+*.egg-info/

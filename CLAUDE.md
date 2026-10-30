@@ -1,8 +1,9 @@
 # CLAUDE.md
 
 Orientation for agents working on **ihg**: an interactive, fzf-like browser for bash/zsh
-shell history, written in Go (`cmd/ihg`, `internal/*`). A Python predecessor lives in
-`legacy/` as the behavioural reference until the Go version is declared at parity.
+shell history, written in Go (`cmd/ihg`, `internal/*`). It replaced a Python implementation
+(removed in Phase 5; the last commit that has it is the git tag `python-final`, useful as a
+behavioural reference: `git show python-final:legacy/ihg/tui.py`).
 
 ## The one idea to understand first
 
@@ -39,7 +40,6 @@ needed all three). Keep it that way: do not make the binary exec the command.
 | `internal/clipboard/`, `internal/result/` | OSC 52 + tool fallback; the `$IHG_OUT` file protocol |
 | `internal/shellinit/` | `ihg.zsh`, `ihg.bash` (go:embed). fish is **not** supported |
 | `e2e/` | real zsh/bash in a pty driving the real binary |
-| `legacy/` | the Python version and its tests, kept runnable (`make legacy-test`) |
 
 ## Commands
 
@@ -158,16 +158,21 @@ No cgo. `bin/`, `build/`, `dist/`, `*.egg-info` are ignored leftovers; never com
 
 ## Status and next steps
 
-Done: Phases 0-4 (scaffolding, core libraries, shell integration, picker UI, colon commands,
-delete/backup, copy, groups, preview, sort, live reload, mouse, match modes, in-window edit).
+Done: Phases 0-5 (scaffolding, core libraries, shell integration, picker UI, colon commands,
+delete/backup, copy, groups, preview, sort, live reload, mouse, match modes, in-window edit, parity
+check against the Python version, README rewrite, removal of `legacy/`).
+
+Parity facts worth knowing: on a real 406-command zsh history and a synthetic bash file, the Go
+and Python pipelines (parse, dedupe, trivial filter, newest first) produced byte-identical lists.
+Deliberate differences from Python: commands run in the user's shell (no alias parsing, no PTY,
+no `ihg: running:` line), exact matching now splits on spaces into ANDed terms, and copy mode no
+longer prints the command when no clipboard works (OSC 52 success cannot be detected).
 
 Open:
-1. **Phase 5**: feature-parity checklist against `legacy/`, rewrite the README for the Go
-   version, then delete `legacy/` and its packaging files.
-2. **Phase 6** (needs a GitHub remote; none is configured): CI matrix (macOS with zsh + Homebrew
+1. **Phase 6** (needs a GitHub remote; none is configured): CI matrix (macOS with zsh + Homebrew
    bash 5, Linux with bash + zsh), goreleaser (static binaries, `homebrew_casks`). The module
    path `github.com/Dologan/ihg` is a placeholder until then.
-3. Known follow-ups: deleting a whole group rewrites the history file once per command (slow on
+2. Known follow-ups: deleting a whole group rewrites the history file once per command (slow on
    NFS; add a batch delete); unverified in real terminals: Ctrl-/ key, mouse clicks with the
    preview open, ZWJ emoji widths.
 

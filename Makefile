@@ -1,7 +1,7 @@
-# Common tasks. `make` alone runs the checks every phase must pass.
+# Common tasks. `make` alone runs the checks every change must pass.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: check test vet fmt build legacy-test
+.PHONY: check test vet fmt build
 
 check: fmt vet test
 
@@ -17,6 +17,3 @@ fmt:
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o bin/ihg ./cmd/ihg
-
-legacy-test:
-	cd legacy && python3 -m pytest -q
