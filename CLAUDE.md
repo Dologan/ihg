@@ -169,12 +169,23 @@ no `ihg: running:` line), exact matching now splits on spaces into ANDed terms, 
 longer prints the command when no clipboard works (OSC 52 success cannot be detected).
 
 Open:
-1. **Phase 6** (needs a GitHub remote; none is configured): CI matrix (macOS with zsh + Homebrew
-   bash 5, Linux with bash + zsh), goreleaser (static binaries, `homebrew_casks`). The module
-   path `github.com/Dologan/ihg` is a placeholder until then.
+1. **Phase 6** (the GitHub remote now exists, `github.com/Dologan/ihg`): CI matrix (macOS with
+   zsh + Homebrew bash 5, Linux with bash + zsh), goreleaser (static binaries, `homebrew_casks`).
 2. Known follow-ups: deleting a whole group rewrites the history file once per command (slow on
    NFS; add a batch delete); unverified in real terminals: Ctrl-/ key, mouse clicks with the
    preview open, ZWJ emoji widths.
+
+## Identity and publishing
+
+The project is published under the pseudonymous identity **Dologan <github@dologan.com>**; the
+repo-local git config is set to it. Keep it that way: never commit with a different name or
+email, never put real names, usernames, employer names, hostnames or filesystem paths (such as a
+home directory) in code, docs, tests or commit messages, and check `git log --format='%an <%ae>'`
+before pushing. The history was rewritten once to remove an earlier identity; do not re-add
+anything from the pre-rewrite history. Commit with `TZ=UTC git commit ...`: the machine's local
+timezone would otherwise put its offset (for example `+0100` in summer time) into every commit and
+hint at a region. Push with the SSH key that authenticates as Dologan
+(`ssh -T git@github.com` should say "Hi Dologan!").
 
 ## Conventions
 

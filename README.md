@@ -11,6 +11,7 @@ You need Go 1.26 or newer to build it. From a clone of this repository:
 
 ```bash
 go install ./cmd/ihg        # installs to $(go env GOPATH)/bin; make sure that is on your PATH
+# or, without cloning:  go install github.com/Dologan/ihg/cmd/ihg@latest
 # or
 make build                  # writes bin/ihg; copy it somewhere on your PATH
 ```
